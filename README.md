@@ -1,4 +1,4 @@
-# hyperv-gpupv
+# HyperV-fnos-GPUPV
 
 Hyper-V **GPU-PV** (GPU partitioning) for a Linux guest — the distilled, scripted version of a working
 fnOS/Debian setup on an RTX 3060 Ti.

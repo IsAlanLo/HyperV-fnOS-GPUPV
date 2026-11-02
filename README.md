@@ -210,6 +210,7 @@ bash tests/smoke.sh --no-build # 39 checks, nothing mutated
 | guest | Debian 12 / fnOS, kernel 6.18.18.c1032-trim, RTX 3060 Ti, driver 591.86 / CUDA 13.1                                 |
 | host  | Windows 10 Pro for Workstations 22H2 19045.7184                                                                     |
 | tests | `tests/smoke.sh --no-build` 39/39, `tests/e2e_deploy.sh` 10/10, both module branches compile and pass the ABI gates |
+[success report](docs/success-report.md)
 
 ## License
 

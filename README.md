@@ -19,33 +19,6 @@ refuses to call anything working off `nvidia-smi`.
 
 ---
 
-## Why this exists
-
-A GPU-PV guest is four layers, and each has a signature that looks like the others:
-
-```
-app → libcuda.so.1  (loader, ~171 KB)         "NVML prints a table but cuInit segfaults"
-      → libcuda.so.1.1 (payload, ~25 MB)
-      → libdxcore → /dev/dxg → dxgkrnl         "GPU access blocked by the operating system"
-      → VMBus channel → GPU partition (host)   "no adapter started"
-      → DriverStore/nv_dispi…/nvinfo.pb …      the metadata nobody copies
-```
-
-On the machine this came from the guest's DriverStore copy had **18 files, all `.so`, zero
-metadata**, while the host's folder held **153 files**. `nvidia-smi` printed a full table and
-`cuInit` segfaulted at a constant offset (`libcuda+0x516f71`, `si_addr 0x296c`). Copying the complete
-host folder made `cuInit` return `0` immediately; `h264_nvenc`, `hevc_nvenc`, `h264_cuvid`,
-`hevc_cuvid` and `hwaccel cuda` all worked.
-
-So: **count files before theorising about mechanisms.** Two commands decide it.
-
-```bash
-ls /usr/lib/wsl/drivers/nv_dispi.inf_amd64_*/ | wc -l             # < 20  → trimmed
-ls /usr/lib/wsl/drivers/nv_dispi.inf_amd64_*/ | grep -vc '\.so'    # 0     → trimmed
-```
-
----
-
 繁體中文快速上手：**[docs/quickstart.zh-TW.md](docs/quickstart.zh-TW.md)**
 
 ## Quick start

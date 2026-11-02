@@ -1,8 +1,7 @@
 # hyperv-gpupv
 
 Hyper-V **GPU-PV** (GPU partitioning) for a Linux guest — the distilled, scripted version of a working
-fnOS/Debian setup on an RTX 3060 Ti, where the final blocker turned out to be a **trimmed NVIDIA
-DriverStore directory**, not the kernel, the protocol or the library generation.
+fnOS/Debian setup on an RTX 3060 Ti.
 
 Two files do everything:
 

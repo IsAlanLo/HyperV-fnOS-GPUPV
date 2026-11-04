@@ -178,20 +178,23 @@ function Get-SshTarget {
 }
 
 function Invoke-GuestSsh {
-    <#  Run a command list in the guest. -Tty makes sudo able to prompt for a
-        password on the console; without it a non-interactive ssh fails with
-        "sudo: no tty present", which reads like a permission bug. #>
     param([string[]]$Remote, [switch]$Tty, [switch]$Capture)
     $ssh = Get-SshExe
-    $argv = @('-o', 'BatchMode=no', '-o', 'StrictHostKeyChecking=accept-new', '-p', "$SshPort")
-    if ($SshKey) { $argv += @('-i', $SshKey) }
-    if ($Tty) { $argv += '-t' }
-    $argv += (Get-SshTarget)
+    $argv = @('-o','BatchMode=no','-o','StrictHostKeyChecking=accept-new','-p',$SshPort)
+    if ($SshKey) { $argv += @('-i',$SshKey) }
+    if ($Tty)    { $argv += '-t' }
+    $argv += Get-SshTarget
     $argv += ($Remote -join '; ')
-
     if ($Capture) {
-        $out = & $ssh @argv 2>&1
-        return [pscustomobject]@{ Output = ($out -join "`n"); Code = $LASTEXITCODE }
+        $old = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $out  = & $ssh @argv 2>&1 | ForEach-Object { "$_" }
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $old
+        }
+        return [pscustomobject]@{ Output = ($out -join "`n"); Code = $code }
     }
     & $ssh @argv
     if ($LASTEXITCODE -ne 0) { throw "ssh command failed (exit $LASTEXITCODE): $($Remote -join '; ')" }

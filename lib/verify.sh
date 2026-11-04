@@ -124,7 +124,19 @@ cmd_verify() {
 		summary "gates"; return $?
 	fi
 
-	say "gate 2/5: userland payload shape"
+	say "gate 2/5: userland (loaders + payload)"
+	# Both halves are required and they fail differently: no loaders means nothing
+	# to call at all, a trimmed payload means nvidia-smi works and cuInit does not.
+	local lc=0
+	[ -e "$WSL_LIB/libcuda.so.1" ] && lc=$((lc + 1))
+	[ -e "$WSL_LIB/libnvidia-ml.so.1" ] && lc=$((lc + 1))
+	[ -e "$WSL_LIB/libdxcore.so" ] && lc=$((lc + 1))
+	if [ "$lc" -eq 3 ]; then
+		mark_ok "loaders present in $WSL_LIB"
+	else
+		mark_fail "loaders missing in $WSL_LIB ($lc/3)" "- deploy ExHyperV's lib/: sudo $PROG loaders install <lib dir>"
+	fi
+
 	local ds
 	if ds=$(ds_pick); then
 		local n ns
@@ -133,10 +145,10 @@ cmd_verify() {
 		if [ "$n" -ge 150 ] && [ "$ns" -gt 0 ]; then
 			mark_ok "driverstore complete"
 		else
-			mark_fail "driverstore trimmed" "expected ~153 files with metadata; see: $PROG driverstore install"
+			mark_fail "driverstore trimmed" "expected ~150 files with metadata; see: $PROG driverstore install"
 		fi
 	else
-		mark_fail "no DriverStore directory found" "$WSL_DRIVERS/$NVSTORE_GLOB"
+		mark_fail "no DriverStore payload deployed" "$WSL_DRIVERS/$NVSTORE_GLOB"
 	fi
 
 	say "gate 3/5: NVML (monitoring path only)"

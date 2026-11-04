@@ -116,8 +116,48 @@ if [ -n "$DS" ] && [ -d "$DS" ]; then
 	printf '%s' "$out" | grep -q 'no difference' && ok "identical copy -> 'no difference'" || bad "identical detection" "$(printf '%s' "$out" | tail -4)"
 	rm -rf "$sub" "$same"
 else
-	echo "  (skipped: no DriverStore directory on this machine)"
+	echo "  (skipped: no DriverStore on this machine)"
 fi
+
+# --- 6b. a FRESH guest: nothing deployed yet ----------------------------
+# This is the state a brand-new VM is in, and it used to abort at
+# "no unique nv_dispi.inf_amd64_*" - before the first install had a chance.
+headr "fresh guest (no DriverStore, no loaders)"
+fresh=$(mktemp -d "${TMPDIR:-/tmp}/smoke-fresh.XXXXXX")
+mkdir -p "$fresh/wsl/drivers" "$fresh/store/nv_dispi.inf_amd64_fresh"
+for i in $(seq 1 160); do : > "$fresh/store/nv_dispi.inf_amd64_fresh/f$i.dat"; done
+printf 'meta' > "$fresh/store/nv_dispi.inf_amd64_fresh/nvinfo.pb"
+out=$(WSL_LIB=$fresh/wsl/lib WSL_DRIVERS=$fresh/wsl/drivers DS_BACKUP=$fresh/bk \
+	GPUPV_CACHE=$fresh/cache NO_COLOR=1 ./gpupv.sh driverstore status 2>&1)
+printf '%s' "$out" | grep -qi 'normal before the first install' && ok "status explains a fresh guest instead of erroring out" \
+	|| bad "fresh status" "$(printf '%s' "$out" | head -5)"
+out=$(WSL_LIB=$fresh/wsl/lib WSL_DRIVERS=$fresh/wsl/drivers GPUPV_CACHE=$fresh/cache NO_COLOR=1 \
+	./gpupv.sh driverstore compare "$fresh/store/nv_dispi.inf_amd64_fresh" 2>&1)
+printf '%s' "$out" | grep -q 'first install' && ok "compare treats a fresh guest as a first install" \
+	|| bad "fresh compare" "$(printf '%s' "$out" | tail -4)"
+# and the install must create the destination from the incoming folder NAME
+if command -v unshare >/dev/null 2>&1 && unshare -rm true 2>/dev/null; then
+	out=$(unshare -rm bash -c "WSL_LIB=$fresh/wsl/lib WSL_DRIVERS=$fresh/wsl/drivers DS_BACKUP=$fresh/bk GPUPV_CACHE=$fresh/cache NO_COLOR=1 \
+		$(pwd)/gpupv.sh driverstore install $fresh/store/nv_dispi.inf_amd64_fresh" 2>&1)
+	n=$(ls -1 "$fresh/wsl/drivers/nv_dispi.inf_amd64_fresh" 2>/dev/null | wc -l)
+	[ "$n" = "161" ] && ok "install on a fresh guest creates \$WSL_DRIVERS/<leaf> ($n files)" \
+		|| bad "fresh install" "$(printf '%s' "$out" | grep -E 'target|ERROR' | head -3)"
+else
+	echo "  (skipped install: unshare unavailable)"
+fi
+rm -rf "$fresh"
+
+# --- 6c. the build toolchain check --------------------------------------
+headr "deps"
+out=$(NO_COLOR=1 ./gpupv.sh deps 2>&1); rc=$?
+if command -v gcc >/dev/null 2>&1; then
+	[ "$rc" -eq 0 ] && ok "deps reports the toolchain present" || bad "deps exit $rc" "$(printf '%s' "$out" | tail -4)"
+else
+	[ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'deps --install' && ok "deps names the install command when gcc is missing" \
+		|| bad "deps" "$(printf '%s' "$out" | tail -4)"
+fi
+out=$(NO_COLOR=1 ./gpupv.sh driverstore install /tmp 2>&1)
+printf '%s' "$out" | grep -q 'deps\|root' && ok "root-guarded commands still name the fix" || bad "root guard message" "$out"
 
 # --- 7. filesystem mutation in a throwaway namespace --------------------
 # Exercises the backup / overlay / rollback logic and the trimmed-set refusal

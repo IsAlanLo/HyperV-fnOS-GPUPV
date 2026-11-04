@@ -31,6 +31,13 @@ gpupv-fnos.sh triage
 - **No dxg VMBus channels at all** → host side. `gpupv-windows.ps1 -Action Check`, then
   `-Action AddPartition`. A stale `HostResource` (after a driver reinstall) still hands the guest
   channels but nothing usable behind them.
+- **`module build` dies with `/bin/sh: 1: gcc: not found` / `Error 127`** → the toolchain, not the
+  source. A stock fnOS ships `make` without `gcc`:
+
+  ```bash
+  sudo ./gpupv-fnos.sh deps --install     # gcc, xz, bc, bison, flex, libelf/libssl/zlib
+  ```
+
 - **Channels present, module not loaded** → build and install it:
 
   ```bash

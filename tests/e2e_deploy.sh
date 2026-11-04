@@ -60,24 +60,32 @@ echo "== PowerShell: the script parses and builds the Deploy one-liner"
 line=$(pwsh -NoProfile -File gpupv-windows.ps1 -Action ShowPowerShell -For Deploy \
 	-GuestHost 10.9.9.9 -GuestUser alan 2>&1)
 if printf '%s' "$line" | grep -q 'tar.exe -cf'; then ok "Deploy one-liner packs a tar"; else bad "Deploy one-liner" "$line"; fi
-if printf '%s' "$line" | grep -q 'gpupv-fnos.sh driverstore install'; then ok "Deploy one-liner installs the DriverStore"; else bad "Deploy one-liner install step"; fi
+if printf '%s' "$line" | grep -q 'gpupv-fnos.sh setup'; then ok "Deploy one-liner runs the guest setup"; else bad "Deploy one-liner setup step"; fi
+if printf '%s' "$line" | grep -q 'strip-components'; then
+	bad "Deploy one-liner still strips the DriverStore folder name" "- DXCore looks the payload up BY that name"
+else ok "Deploy one-liner preserves the nv_dispi folder name"; fi
 if [ "$(printf '%s\n' "$line" | wc -l)" -le 2 ]; then ok "Deploy one-liner is a single pasteable line"; else bad "one-liner is multi-line"; fi
 
-echo "== ssh reachability + upload path (fake ssh, local exec)"
-ssh -o BatchMode=no -p 22 alan@10.9.9.9 'echo GPUPV_ALIVE; uname -r' > "$SB/reach.txt" 2>&1
+echo "== ssh reachability + guest prerequisites (fake ssh, local exec)"
+ssh -o BatchMode=no -p 22 alan@10.9.9.9 'echo GPUPV_ALIVE; uname -r; id -un; for b in gcc make xz depmod; do command -v $b >/dev/null 2>&1 || printf "MISSING %s\n" $b; done' > "$SB/reach.txt" 2>&1
 grep -q GPUPV_ALIVE "$SB/reach.txt" && ok "reachability probe reports GPUPV_ALIVE" || bad "reachability" "$(cat "$SB/reach.txt")"
+grep -q '^MISSING ' "$SB/reach.txt" && bad "missing-binary probe fired on a machine that has the toolchain" "$(cat "$SB/reach.txt")" \
+	|| ok "missing-binary probe is silent when the toolchain is present"
 
 printf 'hello-guest-script\n' > "$SB/local_gpupv-fnos.sh"
 cat "$SB/local_gpupv-fnos.sh" | ssh alan@10.9.9.9 "cat > $SB/guest/gpupv-fnos.sh"
 cmp -s "$SB/local_gpupv-fnos.sh" "$SB/guest/gpupv-fnos.sh" && ok "script upload is byte-identical" \
 	|| bad "script upload" "$(cat "$SB/guest/gpupv-fnos.sh" 2>&1)"
 
-echo "== tar round-trip of the DriverStore"
+echo "== tar round-trip keeps the DriverStore folder name"
 tar -cf "$SB/nvstore.tar" -C "$SB/wsl/drivers" nv_dispi.inf_amd64_e2e
 mkdir -p "$SB/guest/nvstore"
-ssh alan@10.9.9.9 "tar -xf $SB/nvstore.tar -C $SB/guest/nvstore --strip-components=1; ls $SB/guest/nvstore | wc -l" > "$SB/count.txt" 2>&1
-[ "$(tr -d ' ' < "$SB/count.txt")" = "18" ] && ok "tar extract yields the 18 files with --strip-components=1" \
+ssh alan@10.9.9.9 "rm -rf $SB/guest/nvstore && mkdir -p $SB/guest/nvstore && tar -xf $SB/nvstore.tar -C $SB/guest/nvstore && ls $SB/guest/nvstore/nv_dispi.inf_amd64_e2e | wc -l" > "$SB/count.txt" 2>&1
+[ "$(tr -d ' ' < "$SB/count.txt")" = "18" ] && ok "extract without --strip-components yields 18 files under the real folder name" \
 	|| bad "tar extract" "$(cat "$SB/count.txt")"
+ssh alan@10.9.9.9 "sd=\$(ls -d $SB/guest/nvstore/nv_dispi.inf_amd64_* | head -1); echo \"SD=\$sd\"" > "$SB/sd.txt" 2>&1
+grep -q "SD=$SB/guest/nvstore/nv_dispi.inf_amd64_e2e" "$SB/sd.txt" && ok "the guest-side folder lookup finds the nv_dispi path" \
+	|| bad "folder lookup" "$(cat "$SB/sd.txt")"
 
 echo "== guest installer sees the sandbox as a trimmed deployment"
 out=$(WSL_DRIVERS=$SB/wsl/drivers WSL_LIB=$SB/wsl/lib GPUPV_CACHE=$SB/cache NO_COLOR=1 \
@@ -89,13 +97,14 @@ cmds=(
 	"mkdir -p $SB/guest"
 	"chmod +x $SB/guest/gpupv-fnos.sh"
 	"bash $REPO/gpupv-fnos.sh version"
-	"cat $SB/guest/nvstore/libfake1.so.1 > /dev/null && echo TARBALL_OK"
+	"bash $REPO/gpupv-fnos.sh deps > /dev/null && echo DEPS_OK"
+	"cat $SB/guest/nvstore/libfake1.so.1 > /dev/null 2>&1 || cat $SB/guest/nvstore/nv_dispi.inf_amd64_e2e/libfake1.so.1 > /dev/null; echo TARBALL_OK"
 )
 for c in "${cmds[@]}"; do
 	ssh alan@10.9.9.9 "$c" >/dev/null 2>&1 || bad "remote step failed: $c"
 done
 ok "all remote steps executed"
-grep -q 'TARBALL_OK\|chmod' "$SB/calls/log" && ok "fake ssh recorded the command log" || bad "command log empty"
+grep -q 'DEPS_OK\|chmod' "$SB/calls/log" && ok "fake ssh recorded the command log" || bad "command log empty"
 
 echo "== -Action Remote composes the right command"
 # the guest side installs the script under $RemoteDir (default /tmp/gpupv); the

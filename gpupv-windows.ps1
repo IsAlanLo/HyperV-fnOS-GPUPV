@@ -340,15 +340,34 @@ switch ($Action) {
         Write-Item 'DriverStore' "$($ds.Path) ($($ds.Files) files, $($ds.SizeMB) MB)"
 
         # 1. reachability as its own step: if this is what fails, the user must be
-        #    able to tell that nothing else was attempted.
-        Write-Host '  [1/5] ssh reachability'
-        $r = Invoke-GuestSsh -Remote @('echo GPUPV_ALIVE; uname -r; id -un') -Capture
+        #    able to tell that nothing else was attempted. The same probe checks the
+        #    guest's build prerequisites, because a stock fnOS has `make` but no
+        #    `gcc` - and finding that out after a 2.5 GB upload wastes the upload.
+        Write-Host '  [1/5] ssh + guest prerequisites'
+        $probe = 'echo GPUPV_ALIVE; uname -r; id -un; ' +
+                 'for b in gcc make xz depmod; do command -v $b >/dev/null 2>&1 || printf "MISSING %s\n" $b; done; ' +
+                 '[ -d /lib/modules/$(uname -r)/build ] || echo "MISSING headers"'
+        $r = Invoke-GuestSsh -Remote @($probe) -Capture
         if ($r.Output -notmatch 'GPUPV_ALIVE') {
             Write-Bad "ssh to $target failed:"
             Write-Host $r.Output
             throw 'fix ssh first (or use -Action Push over HTTP)'
         }
-        Write-Good "ssh ok - guest kernel $((($r.Output -split "`n") | Where-Object { $_ -match '^\d' } | Select-Object -First 1))"
+        $guestKernel = (($r.Output -split "`n") | Where-Object { $_ -match '^\d+\.\d+' } | Select-Object -First 1)
+        Write-Good "ssh ok - guest kernel $guestKernel"
+
+        $missing = @(($r.Output -split "`n") | Where-Object { $_ -match '^MISSING ' } | ForEach-Object { $_.Substring(8).Trim() })
+        if ($missing -contains 'headers') {
+            Write-Bad "kernel headers for $guestKernel are not installed in the guest"
+            Write-Host "  in the guest:  sudo apt-get install -y linux-headers-$guestKernel" -ForegroundColor Cyan
+            throw 'the module cannot be built without the kernel headers'
+        } elseif ($missing.Count -gt 0) {
+            Write-Warn2 "guest is missing: $($missing -join ', ')"
+            Write-Warn2 "a stock fnOS has make but no gcc - 'setup' installs the toolchain as root (one apt-get)."
+            Write-Warn2 'to install it up front instead:  sudo ./gpupv-fnos.sh deps --install'
+        } else {
+            Write-Good 'toolchain present (gcc, make, xz, depmod, kernel headers)'
+        }
 
         # 2. the guest script
         Write-Host '  [2/5] upload ' -NoNewline
@@ -360,14 +379,20 @@ switch ($Action) {
 
         # 3. the DriverStore as ONE tar - 150 small files over scp is slow and the
         #    progress is invisible; one archive gives a single transfer to watch.
+        #
+        #    The archive keeps the nv_dispi.inf_amd64_<hash> folder as its ROOT.
+        #    That folder NAME is half of the contract: on a fresh guest nothing is
+        #    deployed yet, so DXCore's expected name can only come from the host's
+        #    folder. Extracting with --strip-components=1 discards it and the
+        #    install then has nothing to name the destination with.
+        $dsLeaf = Split-Path -Leaf $ds.Path
         if ($SkipDriverStore) {
             Write-Host '  [3/5] DriverStore skipped (-SkipDriverStore)'
         } else {
             Write-Host '  [3/5] packing the DriverStore'
             $tar = Join-Path $env:TEMP 'gpupv-driverstore.tar'
             if (Test-Path $tar) { Remove-Item $tar -Force }
-            $leaf = Split-Path -Leaf $ds.Path
-            & tar.exe -cf $tar -C (Split-Path -Parent $ds.Path) $leaf
+            & tar.exe -cf $tar -C (Split-Path -Parent $ds.Path) $dsLeaf
             if ($LASTEXITCODE -ne 0) { throw "tar failed (exit $LASTEXITCODE)" }
             $sizeMB = [math]::Round((Get-Item $tar).Length / 1MB, 1)
             Write-Item 'archive' "$tar ($sizeMB MB)"
@@ -377,19 +402,19 @@ switch ($Action) {
             Remove-Item $tar -Force -ErrorAction SilentlyContinue
         }
 
-        # 4. unpack + setup, in the guest, with a tty so sudo can prompt.
-        #    'setup' builds the module only when it is missing, installs the
-        #    DriverStore, wires the boot service and ends with the real gates -
-        #    so this one call is the whole guest side, and re-running it is safe.
-        Write-Host '  [5/5] installing in the guest (sudo will prompt here)'
-        $setupArg = if ($SkipDriverStore) { '' } else { " $RemoteDir/nvstore" }
+        # 4. unpack + setup, in the guest. ONE sudo prompt for the whole run:
+        #    'sudo -v' refreshes the timestamp, then 'sudo -n' uses it. Letting each
+        #    step prompt on its own is what produced "Sorry, try again" loops when
+        #    several prompts raced in one tty.
+        Write-Host '  [5/5] installing in the guest (sudo will prompt once)'
+        $storeArg = if ($SkipDriverStore) { '' } else { " $RemoteDir/nvstore/$dsLeaf" }
         $cmds = @(
             "chmod +x $RemoteDir/$GuestScript"
-            "mkdir -p $RemoteDir/nvstore"
-            "tar -xf $RemoteDir/nvstore.tar -C $RemoteDir/nvstore --strip-components=1"
-            ('echo "unpacked: $(ls ' + $RemoteDir + '/nvstore | wc -l) files"')
-            "$RemoteDir/$GuestScript driverstore compare $RemoteDir/nvstore"
-            "sudo $RemoteDir/$GuestScript setup$setupArg"
+            "rm -rf $RemoteDir/nvstore && mkdir -p $RemoteDir/nvstore"
+            "tar -xf $RemoteDir/nvstore.tar -C $RemoteDir/nvstore 2>/dev/null || true"
+            ('if [ -d "' + $RemoteDir + '/nvstore/' + $dsLeaf + '" ]; then echo "unpacked: $(ls ' + $RemoteDir + '/nvstore/' + $dsLeaf + ' | wc -l) files into nvstore/' + $dsLeaf + '"; else echo "unpacked flat - the archive had no folder root, falling back"; fi')
+            "sudo -v"
+            "sudo -n $RemoteDir/$GuestScript setup$storeArg"
         )
         # 'setup' ends with the gates and their exit code comes back through ssh,
         # so a failed install is not reported as a success here.
@@ -516,7 +541,10 @@ switch ($Action) {
                 '$VM="' + $VMName + '"; if((Get-VM $VM).State -ne "Off"){Stop-VM $VM -Force}; Remove-VMGpuPartitionAdapter -VMName $VM -EA 0; Add-VMGpuPartitionAdapter -VMName $VM; Get-VMGpuPartitionAdapter -VMName $VM | Select VMName,InstancePath'
             }
             'Deploy' {
-                '$d=((Get-CimInstance Win32_VideoController | ? {$_.AdapterCompatibility -match "NVIDIA"}).InstalledDisplayDrivers -split ",")[0] | Split-Path -Parent; $t=Join-Path $env:TEMP "nvstore.tar"; tar.exe -cf $t -C (Split-Path -Parent $d) (Split-Path -Leaf $d); ssh ' + $GuestUser + '@' + $GuestHost + ' "mkdir -p /tmp/gpupv"; cat $t | ssh ' + $GuestUser + '@' + $GuestHost + ' "cat > /tmp/gpupv/nvstore.tar"; scp -P ' + $SshPort + ' .\gpupv-fnos.sh ' + $GuestUser + '@' + $GuestHost + ':/tmp/gpupv/; ssh -t ' + $GuestUser + '@' + $GuestHost + ' "tar -xf /tmp/gpupv/nvstore.tar -C /tmp/gpupv/nvstore --strip-components=1 2>/dev/null || (mkdir -p /tmp/gpupv/nvstore && tar -xf /tmp/gpupv/nvstore.tar -C /tmp/gpupv/nvstore --strip-components=1); chmod +x /tmp/gpupv/gpupv-fnos.sh; sudo /tmp/gpupv/gpupv-fnos.sh driverstore install /tmp/gpupv/nvstore; sudo /tmp/gpupv/gpupv-fnos.sh service install --selftest; /tmp/gpupv/gpupv-fnos.sh verify"'
+                # The archive keeps the nv_dispi.inf_amd64_<hash> folder as its root -
+                # that name is what DXCore asks the loader for, so it must survive the
+                # transfer. One sudo prompt, then 'setup' does the whole guest side.
+                '$d=((Get-CimInstance Win32_VideoController | ? {$_.AdapterCompatibility -match "NVIDIA"}).InstalledDisplayDrivers -split ",")[0] | Split-Path -Parent; $t=Join-Path $env:TEMP "nvstore.tar"; tar.exe -cf $t -C (Split-Path -Parent $d) (Split-Path -Leaf $d); ssh ' + $GuestUser + '@' + $GuestHost + ' "mkdir -p /tmp/gpupv"; cat $t | ssh ' + $GuestUser + '@' + $GuestHost + ' "cat > /tmp/gpupv/nvstore.tar"; scp -P ' + $SshPort + ' .\gpupv-fnos.sh ' + $GuestUser + '@' + $GuestHost + ':/tmp/gpupv/; ssh -t ' + $GuestUser + '@' + $GuestHost + ' "chmod +x /tmp/gpupv/gpupv-fnos.sh; rm -rf /tmp/gpupv/nvstore && mkdir -p /tmp/gpupv/nvstore; tar -xf /tmp/gpupv/nvstore.tar -C /tmp/gpupv/nvstore; sd=$(ls -d /tmp/gpupv/nvstore/nv_dispi.inf_amd64_* 2>/dev/null | head -1); sudo -v; sudo -n /tmp/gpupv/gpupv-fnos.sh setup ${sd:-/tmp/gpupv/nvstore}"'
             }
         }
         Write-Output $line

@@ -2,6 +2,7 @@
 # gpupv-fnos.sh - Hyper-V GPU-PV (GPU partitioning) tool for the Linux guest.
 #
 # The whole job, in the order it is usually needed:
+#   deps         the build toolchain (a stock fnOS has make but NO gcc)
 #   triage       root-free: which layer is broken (guest / kernel / userland / host)
 #   verify       functional gates: /dev/dxg -> DriverStore -> NVML -> CUDA -> NVENC/CUVID
 #   doctor       deeper: offline module ABI gates, DriverStore hash diff, LD_DEBUG trace
@@ -16,6 +17,8 @@
 #   * a deploy script's "SUCCESS" line proves nothing (they are full of `|| true`).
 #   * count files before theorising about mechanisms.
 #   * never hard-code a kernel string, a driver version or a DriverStore <hash>.
+#   * a missing dependency is reported as a missing dependency, not as a build
+#     failure: fnOS ships make without gcc, and kbuild only says "Error 127".
 #
 # Host side lives in gpupv-windows.ps1 (Windows PowerShell).
 set -u
@@ -281,6 +284,150 @@ GPUPV_ASSET_HTTP_PUT_SERVER_B64='IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJUaHJvd2F3YXk
 GPUPV_ASSET_LDPRELOAD_TRACE_B64='LyoKICogbGRwcmVsb2FkX3RyYWNlLmMg4oCUIHdobyBpcyBhY3R1YWxseSBmYWlsaW5nOiBsb2FkZXIsIHBheWxvYWQsIERYQ29yZSBvciBrZXJuZWwuCiAqCiAqIEJ1aWxkOgogKiAgIGdjYyAtc2hhcmVkIC1mUElDIC1PMCAtbyAvdG1wL3RyYWNlLnNvIHNjcmlwdHMvbGRwcmVsb2FkX3RyYWNlLmMgLWxkbAogKiBSdW46CiAqICAgTERfUFJFTE9BRD0vdG1wL3RyYWNlLnNvIG52aWRpYS1zbWkgMj4mMSB8IGdyZXAgLUUgJ15cWyhkbG9wZW58b3BlbnxtbWFwfGR4Z3xlc2NhcGUpJwogKiAgIExEX1BSRUxPQUQ9L3RtcC90cmFjZS5zbyBweXRob24zIC1jICJpbXBvcnQgY3R5cGVzO2N0eXBlcy5DRExMKCdsaWJjdWRhLnNvLjEnKS5jdUluaXQoMCkiCiAqCiAqIFdoYXQgZWFjaCBsaW5lIGlzIGZvcjoKICogICBbZGxvcGVuXSDigKYgLT4gRkFJTCAgICAgIHRoZSBleGFjdCBsaWJyYXJ5IHBhdGggdGhlIHN0YWNrIHdhbnRlZCBhbmQgZGlkIG5vdAogKiAgICAgICAgICAgICAgICAgICAgICAgICAgIGdldC4gVGhpcyBpcyBob3cgdGhlIG1pc3NpbmcgZHJpdmVyLXN0b3JlIGZvbGRlcgogKiAgICAgICAgICAgICAgICAgICAgICAgICAgICjigKYvZHJpdmVycy9udl9kaXNwaS5pbmZfYW1kNjRfPGhhc2g+L2xpYmZvbykgc2hvd3MgdXAuCiAqICAgW29wZW5dICAg4oCmIC0+IC0xIOKApiAgICAgIG1pc3NpbmcgZGV2aWNlL2ZpbGVzIChlLmcuIC9kZXYvbnZpZGlhLXV2bSwgd2hpY2ggaXMKICogICAgICAgICAgICAgICAgICAgICAgICAgICBhYnNlbnQgb24gd29ya2luZyBXU0wgdG9vIOKAlCBjaGVjayBiZWZvcmUgYmVsaWV2aW5nIGl0KS4KICogICBbbW1hcF0gICAgICAgICAgICAgICAgICBtYXBwaW5ncyBvZiAvZGV2L2R4ZzsgYSBGQUlMIGhlcmUgbWVhbnMgdGhlIEJBUi9NTUlPCiAqICAgICAgICAgICAgICAgICAgICAgICAgICAgc2lkZSBpcyBicm9rZW4sIG5vdCB0aGUgdXNlcmxhbmQuCiAqICAgW2R4Z10gbnI9MHguLiAgICAgICAgICAgZXZlcnkgZHhnIGlvY3RsIHdpdGggaXRzIHJldHVybiBjb2RlICgweDNlIGVudW0zLAogKiAgICAgICAgICAgICAgICAgICAgICAgICAgIDB4MDkgcXVlcnksIDB4MDIgY3JlYXRlZGV2aWNlLCAweDBkIGVzY2FwZSwg4oCmKS4KICogICBbZXNjYXBlXSBjaGFuZ2VkPU4g4oCmICAgIE5WQVBJIGRyaXZlci1wcml2YXRlIGVzY2FwZTogaG93IG1hbnkgYnl0ZXMgdGhlIGhvc3QKICogICAgICAgICAgICAgICAgICAgICAgICAgICB3cm90ZSBiYWNrIGFuZCB3aGVyZS4gY2hhbmdlZD0wIG1lYW5zIHRoZSBob3N0IGRpZCBub3QKICogICAgICAgICAgICAgICAgICAgICAgICAgICBhbnN3ZXI7IGEgcGxhdXNpYmxlIGhlYWx0aHkgYW5zd2VyIGlzIH4xNDYgYnl0ZXMgYW5kCiAqICAgICAgICAgICAgICAgICAgICAgICAgICAgdGhlIHNhbWUgc2lnbmF0dXJlIGluc2lkZSB0aGUgaG9zdCdzIFdTTC4KICogICBTSUdTRUdWIGJhY2t0cmFjZSAgICAgICAgdGhlIGNyYXNoaW5nIHJldHVybiBhZGRyZXNzIGluc2lkZSBsaWJjdWRhOyB0aGUgdG9wCiAqICAgICAgICAgICAgICAgICAgICAgICAgICAgZnJhbWUgYmVpbmcgdGhlIGluc3RydWN0aW9uIGFmdGVyIGEgYGNhbGwgKkdPVGAgbWVhbnMKICogICAgICAgICAgICAgICAgICAgICAgICAgICBhIE5VTEwgZnVuY3Rpb24gcG9pbnRlciwgaS5lLiBhbiBpbml0IHN0ZXAgd2FzIHNraXBwZWQuCiAqCiAqIFJlYWQgdGhlIE9SREVSLCBub3QgYSBzaW5nbGUgbGluZTogdGhlIGZpcnN0IGZhaWxpbmcgZW50cnkgaXMgdGhlIGNhdXNlLCBldmVyeQogKiBsYXRlciBlcnJvciBpcyBmYWxsb3V0LiBBIHJ1biB0aGF0IHN0b3BzIGJlZm9yZSBhbnkgZmlsZSB1bmRlcgogKiAvdXNyL2xpYi93c2wvZHJpdmVycyBpcyBuYW1lZCBuZXZlciByZWFjaGVkIHRoZSBwYXlsb2FkIGF0IGFsbC4KICovCiNkZWZpbmUgX0dOVV9TT1VSQ0UKI2luY2x1ZGUgPHN0ZGFyZy5oPgojaW5jbHVkZSA8c3RkaW8uaD4KI2luY2x1ZGUgPHN0ZGludC5oPgojaW5jbHVkZSA8c3RkbGliLmg+CiNpbmNsdWRlIDxzdHJpbmcuaD4KI2luY2x1ZGUgPGVycm5vLmg+CiNpbmNsdWRlIDxkbGZjbi5oPgojaW5jbHVkZSA8ZmNudGwuaD4KI2luY2x1ZGUgPHNpZ25hbC5oPgojaW5jbHVkZSA8dW5pc3RkLmg+CiNpbmNsdWRlIDxleGVjaW5mby5oPgojaW5jbHVkZSA8c3lzL2lvY3RsLmg+CiNpbmNsdWRlIDxzeXMvbW1hbi5oPgoKc3RhdGljIGludCAoKnJlYWxfaW9jdGwpKGludCwgdW5zaWduZWQgbG9uZywgdm9pZCAqKSA9IE5VTEw7CnN0YXRpYyB2b2lkICooKnJlYWxfbW1hcCkodm9pZCAqLCBzaXplX3QsIGludCwgaW50LCBpbnQsIG9mZl90KSA9IE5VTEw7CnN0YXRpYyBpbnQgKCpyZWFsX29wZW4pKGNvbnN0IGNoYXIgKiwgaW50LCAuLi4pID0gTlVMTDsKc3RhdGljIGludCAoKnJlYWxfb3BlbmF0KShpbnQsIGNvbnN0IGNoYXIgKiwgaW50LCAuLi4pID0gTlVMTDsKc3RhdGljIHZvaWQgKigqcmVhbF9kbG9wZW4pKGNvbnN0IGNoYXIgKiwgaW50KSA9IE5VTEw7CgpzdHJ1Y3QgZHhnX2VzY2FwZSB7Cgl1aW50MzJfdCBhZGFwdGVyOwoJdWludDMyX3QgZGV2aWNlOwoJaW50MzJfdCB0eXBlOwoJdWludDMyX3QgZmxhZ3M7Cgl1aW50NjRfdCBkYXRhOwoJdWludDMyX3Qgc2l6ZTsKCXVpbnQzMl90IGNvbnRleHQ7Cn07CgpzdGF0aWMgaW50IGludGVyZXN0aW5nKGNvbnN0IGNoYXIgKnApCnsKCWlmICghcCkKCQlyZXR1cm4gMDsKCXJldHVybiBzdHJzdHIocCwgIm52aWRpYSIpIHx8IHN0cnN0cihwLCAiZHhnIikgfHwgc3Ryc3RyKHAsICJncHVjb21wIikgfHwKCSAgICAgICBzdHJzdHIocCwgIm52dm0iKSB8fCBzdHJzdHIocCwgInByb2MvZHJpdmVyIikgfHwgc3Ryc3RyKHAsICJkcmkiKTsKfQoKc3RhdGljIGNvbnN0IGNoYXIgKmZkX3RhcmdldChpbnQgZmQsIGNoYXIgKmJ1Ziwgc2l6ZV90IG4pCnsKCWNoYXIgcGF0aFs2NF07Cglzc2l6ZV90IHI7CgoJc25wcmludGYocGF0aCwgc2l6ZW9mKHBhdGgpLCAiL3Byb2Mvc2VsZi9mZC8lZCIsIGZkKTsKCXIgPSByZWFkbGluayhwYXRoLCBidWYsIG4gLSAxKTsKCWlmIChyIDwgMCkKCQlyZXR1cm4gIj8iOwoJYnVmW3JdID0gMDsKCXJldHVybiBidWY7Cn0KCnZvaWQgKmRsb3Blbihjb25zdCBjaGFyICpuYW1lLCBpbnQgZmxhZykKewoJdm9pZCAqaDsKCglpZiAoIXJlYWxfZGxvcGVuKQoJCXJlYWxfZGxvcGVuID0gZGxzeW0oUlRMRF9ORVhULCAiZGxvcGVuIik7CgloID0gcmVhbF9kbG9wZW4obmFtZSwgZmxhZyk7CglpZiAobmFtZSkKCQlmcHJpbnRmKHN0ZGVyciwgIltkbG9wZW5dICVzIC0+ICVzXG4iLCBuYW1lLCBoID8gIk9LIiA6ICJGQUlMIik7CglyZXR1cm4gaDsKfQoKaW50IG9wZW4oY29uc3QgY2hhciAqcGF0aCwgaW50IGZsYWdzLCAuLi4pCnsKCW1vZGVfdCBtb2RlID0gMDsKCXZhX2xpc3QgYXA7CglpbnQgZmQ7CgoJaWYgKCFyZWFsX29wZW4pCgkJcmVhbF9vcGVuID0gZGxzeW0oUlRMRF9ORVhULCAib3BlbiIpOwoJaWYgKGZsYWdzICYgT19DUkVBVCkgewoJCXZhX3N0YXJ0KGFwLCBmbGFncyk7CgkJbW9kZSA9IHZhX2FyZyhhcCwgaW50KTsKCQl2YV9lbmQoYXApOwoJfQoJZmQgPSByZWFsX29wZW4ocGF0aCwgZmxhZ3MsIG1vZGUpOwoJaWYgKGludGVyZXN0aW5nKHBhdGgpKQoJCWZwcmludGYoc3RkZXJyLCAiW29wZW5dICVzIC0+ICVkJXMlc1xuIiwgcGF0aCwgZmQsCgkJCWZkIDwgMCA/ICIgIiA6ICIiLCBmZCA8IDAgPyBzdHJlcnJvcihlcnJubykgOiAiIik7CglyZXR1cm4gZmQ7Cn0KCmludCBvcGVuYXQoaW50IGRpcmZkLCBjb25zdCBjaGFyICpwYXRoLCBpbnQgZmxhZ3MsIC4uLikKewoJbW9kZV90IG1vZGUgPSAwOwoJdmFfbGlzdCBhcDsKCWludCBmZDsKCglpZiAoIXJlYWxfb3BlbmF0KQoJCXJlYWxfb3BlbmF0ID0gZGxzeW0oUlRMRF9ORVhULCAib3BlbmF0Iik7CglpZiAoZmxhZ3MgJiBPX0NSRUFUKSB7CgkJdmFfc3RhcnQoYXAsIGZsYWdzKTsKCQltb2RlID0gdmFfYXJnKGFwLCBpbnQpOwoJCXZhX2VuZChhcCk7Cgl9CglmZCA9IHJlYWxfb3BlbmF0KGRpcmZkLCBwYXRoLCBmbGFncywgbW9kZSk7CglpZiAoaW50ZXJlc3RpbmcocGF0aCkpCgkJZnByaW50ZihzdGRlcnIsICJbb3BlbmF0XSAlcyAtPiAlZCVzJXNcbiIsIHBhdGgsIGZkLAoJCQlmZCA8IDAgPyAiICIgOiAiIiwgZmQgPCAwID8gc3RyZXJyb3IoZXJybm8pIDogIiIpOwoJcmV0dXJuIGZkOwp9Cgp2b2lkICptbWFwKHZvaWQgKmFkZHIsIHNpemVfdCBsZW4sIGludCBwcm90LCBpbnQgZmxhZ3MsIGludCBmZCwgb2ZmX3Qgb2ZmKQp7Cgl2b2lkICpwOwoKCWlmICghcmVhbF9tbWFwKQoJCXJlYWxfbW1hcCA9IGRsc3ltKFJUTERfTkVYVCwgIm1tYXAiKTsKCXAgPSByZWFsX21tYXAoYWRkciwgbGVuLCBwcm90LCBmbGFncywgZmQsIG9mZik7CglpZiAoZmQgPj0gMCkgewoJCWNoYXIgYnVmWzI1Nl07CgkJY29uc3QgY2hhciAqdCA9IGZkX3RhcmdldChmZCwgYnVmLCBzaXplb2YoYnVmKSk7CgoJCWlmIChzdHJzdHIodCwgImR4ZyIpKQoJCQlmcHJpbnRmKHN0ZGVyciwKCQkJCSJbbW1hcF0gZmQ9JWQoJXMpIGxlbj0lenUgcHJvdD0weCV4IG9mZj0lbGxkIC0+ICVwJXNcbiIsCgkJCQlmZCwgdCwgbGVuLCBwcm90LCAobG9uZyBsb25nKW9mZiwgcCwKCQkJCXAgPT0gTUFQX0ZBSUxFRCA/ICIgRkFJTCIgOiAiIik7Cgl9CglyZXR1cm4gcDsKfQoKaW50IGlvY3RsKGludCBmZCwgdW5zaWduZWQgbG9uZyByZXEsIC4uLikKewoJdmFfbGlzdCBhcDsKCXZvaWQgKmFyZzsKCWludCByZXQsIHNhdmVkOwoJdW5zaWduZWQgbnIgPSBfSU9DX05SKHJlcSk7CgoJdmFfc3RhcnQoYXAsIHJlcSk7CglhcmcgPSB2YV9hcmcoYXAsIHZvaWQgKik7Cgl2YV9lbmQoYXApOwoKCWlmICghcmVhbF9pb2N0bCkKCQlyZWFsX2lvY3RsID0gZGxzeW0oUlRMRF9ORVhULCAiaW9jdGwiKTsKCglpZiAoX0lPQ19UWVBFKHJlcSkgPT0gMHg0NyAmJiBuciA9PSAweDBkICYmIGFyZykgewoJCXN0cnVjdCBkeGdfZXNjYXBlICplID0gYXJnOwoJCXVuc2lnbmVkIGNoYXIgKnNuYXAgPSBOVUxMOwoJCXVpbnQzMl90IHN6ID0gZS0+c2l6ZTsKCgkJaWYgKGUtPmRhdGEgJiYgc3opIHsKCQkJc25hcCA9IG1hbGxvYyhzeik7CgkJCWlmIChzbmFwKQoJCQkJbWVtY3B5KHNuYXAsICh2b2lkICopKHVpbnRwdHJfdCllLT5kYXRhLCBzeik7CgkJfQoJCXJldCA9IHJlYWxfaW9jdGwoZmQsIHJlcSwgYXJnKTsKCQlzYXZlZCA9IGVycm5vOwoJCWZwcmludGYoc3RkZXJyLCAiW2VzY2FwZV0gdHlwZT0lZCBzaXplPSV1IGZsYWdzPTB4JXggcmV0PSVkIiwKCQkJZS0+dHlwZSwgc3osIGUtPmZsYWdzLCByZXQpOwoJCWlmIChzbmFwKSB7CgkJCXVuc2lnbmVkIGNoYXIgKm5vdyA9ICh1bnNpZ25lZCBjaGFyICopKHVpbnRwdHJfdCllLT5kYXRhOwoJCQl1bnNpZ25lZCBjaGFuZ2VkID0gMCwgc2hvd24gPSAwLCBpOwoKCQkJZm9yIChpID0gMDsgaSA8IHN6OyBpKyspCgkJCQlpZiAoc25hcFtpXSAhPSBub3dbaV0pCgkJCQkJY2hhbmdlZCsrOwoJCQlmcHJpbnRmKHN0ZGVyciwgIiBjaGFuZ2VkPSV1IiwgY2hhbmdlZCk7CgkJCWZvciAoaSA9IDA7IGkgPCBzeiAmJiBzaG93biA8IDEyOyBpKyspIHsKCQkJCWlmIChzbmFwW2ldICE9IG5vd1tpXSkgewoJCQkJCWZwcmludGYoc3RkZXJyLCAiIFsldTolMDJ4PiUwMnhdIiwgaSwgc25hcFtpXSwgbm93W2ldKTsKCQkJCQlzaG93bisrOwoJCQkJfQoJCQl9CgkJCWZyZWUoc25hcCk7CgkJfQoJCWZwcmludGYoc3RkZXJyLCAiXG4iKTsKCQllcnJubyA9IHNhdmVkOwoJCXJldHVybiByZXQ7Cgl9CgoJcmV0ID0gcmVhbF9pb2N0bChmZCwgcmVxLCBhcmcpOwoJc2F2ZWQgPSBlcnJubzsKCWlmIChfSU9DX1RZUEUocmVxKSA9PSAweDQ3KQoJCWZwcmludGYoc3RkZXJyLCAiW2R4Z10gbnI9MHglMDJ4IHJldD0lZCVzJXNcbiIsIG5yLCByZXQsCgkJCXJldCA8IDAgPyAiIGVycm5vPSIgOiAiIiwKCQkJcmV0IDwgMCA/IHN0cmVycm9yKHNhdmVkKSA6ICIiKTsKCWVycm5vID0gc2F2ZWQ7CglyZXR1cm4gcmV0Owp9CgovKiAtLS0tIGNyYXNoIGxvY2F0aW9uIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0gKi8KCnN0YXRpYyB2b2lkIG9uX3NpZ25hbChpbnQgc2lnKQp7Cgl2b2lkICpidFs0MF07CglpbnQgbjsKCgkodm9pZClzaWc7Cgl3cml0ZSgyLCAiXG49PT0gY3Jhc2g6IGJhY2t0cmFjZSAodG9wIGZyYW1lID0gcmV0dXJuIGFkZHJlc3MpID09PVxuIiwgNTYpOwoJbiA9IGJhY2t0cmFjZShidCwgNDApOwoJYmFja3RyYWNlX3N5bWJvbHNfZmQoYnQsIG4sIDIpOwoJX2V4aXQoMTM5KTsKfQoKX19hdHRyaWJ1dGVfXygoY29uc3RydWN0b3IpKSBzdGF0aWMgdm9pZCBpbnN0YWxsX2hhbmRsZXJzKHZvaWQpCnsKCXN0cnVjdCBzaWdhY3Rpb24gc2E7CgoJbWVtc2V0KCZzYSwgMCwgc2l6ZW9mKHNhKSk7CglzYS5zYV9oYW5kbGVyID0gb25fc2lnbmFsOwoJc2Euc2FfZmxhZ3MgPSBTQV9OT0RFRkVSOwoJc2lnYWN0aW9uKFNJR1NFR1YsICZzYSwgTlVMTCk7CglzaWdhY3Rpb24oU0lHQlVTLCAmc2EsIE5VTEwpOwoJc2lnYWN0aW9uKFNJR0FCUlQsICZzYSwgTlVMTCk7Cn0K'
 GPUPV_ASSET_ABI_GATES_B64='IyEvdXNyL2Jpbi9lbnYgYmFzaAojIGxpYi9hYmlfZ2F0ZXMuc2ggLSBvZmZsaW5lIGdhdGVzIGZvciBhIGR4Z2tybmwua28sIGJlZm9yZSBpdCBpcyBsb2FkZWQuCiMKIyAgIGJhc2ggbGliL2FiaV9nYXRlcy5zaCA8ZHhna3JubC5rbz4gW290aGVyIGQzZGttdGhrLmhdCiMKIyBHYXRlIDIgaXMgdGhlIG9uZSB0aGF0IG1hdHRlcnM6IHRoZSBtb2R1bGUgbXVzdCByZWFkIGhkZXYtPmNoYW5uZWwgYXQgdGhlCiMgUlVOTklORyBLRVJORUwncyBvZmZzZXQuIEEgbW9kdWxlIGJ1aWx0IGFnYWluc3QgdGhlIFdTTCBicmFuY2gncyBoeXBlcnYuaAojIHJlYWRzIGEgbmVpZ2hib3VyaW5nIGZpZWxkLCBOVUxMLWRlcmVmcyBpbnNpZGUgcHJvYmUgd2hpbGUgaG9sZGluZwojIGRldmljZV9tdXRleCwgYW5kIHRoZW4gbm8gbGF0ZXIgcHJvYmUgY2FuIHJ1biB3aGlsZSB2ZXJtYWdpYyBzdGlsbCBtYXRjaGVzLgojIFRoZSBleHBlY3RlZCBvZmZzZXQgaXMgZGVyaXZlZCBmcm9tIHRoZSBydW5uaW5nIGtlcm5lbCBlYWNoIHRpbWUsIG5ldmVyCiMgbWVtb3Jpc2VkLCBiZWNhdXNlIGEga2VybmVsIGJ1bXAgY2hhbmdlcyBpdC4Kc2V0IC11CktPPSR7MTotfQpPVEhFUj0kezI6LX0KWyAtbiAiJEtPIiBdICYmIFsgLWYgIiRLTyIgXSB8fCB7IGVjaG8gInVzYWdlOiBhYmlfZ2F0ZXMuc2ggPGR4Z2tybmwua28+IFtvdGhlci1kM2RrbXRoay5oXSIgPiYyOyBleGl0IDI7IH0KSz0kKHVuYW1lIC1yKQpQUk9HPSQoYmFzZW5hbWUgLS0gIiQwIikKZmFpbD0wCm5vdGUoKSB7IHByaW50ZiAnJS0xNHMgJXNcbicgIiQxIiAiJDIiOyB9CmJhZCgpICB7IHByaW50ZiAnJS0xNHMgRkFJTCAlc1xuJyAiJDEiICIkMiI7IGZhaWw9MTsgfQoKIyAtLS0gMS4gdmVybWFnaWMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCmt2PSQoc3RyaW5ncyAiJEtPIiB8IGdyZXAgLW0xICdedmVybWFnaWM9JyB8IHNlZCAncy9edmVybWFnaWM9Ly8nKQpjYXNlICIka3YiIGluCgkiJEsgIiopIG5vdGUgdmVybWFnaWMgIiRrdiIgOzsKCSIiKSAgICAgYmFkICB2ZXJtYWdpYyAibm8gdmVybWFnaWMgZm91bmQgKG5vdCBhIGtlcm5lbCBtb2R1bGU/KSIgOzsKCSopICAgICAgYmFkICB2ZXJtYWdpYyAiWyRrdl0gIT0gWyRLXSIgOzsKZXNhYwoKIyAtLS0gMi4gaGRldi0+Y2hhbm5lbCBvZmZzZXQgdnMgdGhlIHJ1bm5pbmcga2VybmVsIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCkI9JChta3RlbXAgLWQgIiR7VE1QRElSOi0vdG1wfS9ncHVwdi1vZmYuWFhYWFhYIikKewoJcHJpbnRmICcjaW5jbHVkZSA8bGludXgvbW9kdWxlLmg+XG4jaW5jbHVkZSA8bGludXgvaHlwZXJ2Lmg+XG4nCglwcmludGYgJ3Vuc2lnbmVkIGxvbmcgb2ZmX2NoYW5uZWwodm9pZCkgeyByZXR1cm4gKHVuc2lnbmVkIGxvbmcpb2Zmc2V0b2Yoc3RydWN0IGh2X2RldmljZSwgY2hhbm5lbCk7IH1cbicKfSA+ICIkQi9vZmYuYyIKZWNobyAnb2JqLW0gKz0gb2ZmLm8nID4gIiRCL01ha2VmaWxlIgp3YW50PSIiCmlmIG1ha2UgLUMgIi9saWIvbW9kdWxlcy8kSy9idWlsZCIgTT0iJEIiID4iJEIvbWFrZS5sb2ciIDI+JjEgfHwgWyAtZiAiJEIvb2ZmLm8iIF07IHRoZW4KCSMgdGhlIGNvbXBpbGUgbGVnaXRpbWF0ZWx5IGZhaWxzIGF0IG1vZHBvc3Q7IG9mZi5vIGlzIHByb2R1Y2VkIGZpcnN0Cgl3YW50PSQob2JqZHVtcCAtZCAiJEIvb2ZmLm8iIDI+L2Rldi9udWxsIFwKCQl8IHNlZCAtbiAnLzxvZmZfY2hhbm5lbD46LywvcmV0XHxqbXAvcCcgXAoJCXwgZ3JlcCAtb0UgJ1wkMHhbMC05YS1mXSssJWVheCcgfCBoZWFkIC0xIHwgZ3JlcCAtb0UgJzB4WzAtOWEtZl0rJykKZmkKcm0gLXJmICIkQiIKZ290PSQob2JqZHVtcCAtZCAiJEtPIiAyPi9kZXYvbnVsbCBcCgl8IHNlZCAtbiAnLzxkeGdfcHJvYmVfdm1idXM+Oi8sL14kL3AnIFwKCXwgZ3JlcCAtbTEgLW9FICdtb3YgKzB4WzAtOWEtZl0rXCglcmJ4XCksJXJheCcgfCBncmVwIC1vRSAnMHhbMC05YS1mXSsnKQppZiBbIC1uICIkd2FudCIgXSAmJiBbIC1uICIkZ290IiBdOyB0aGVuCglpZiBbICIkd2FudCIgPSAiJGdvdCIgXTsgdGhlbgoJCW5vdGUgY2hhbm5lbC1vZmYgIiRnb3QgKGtlcm5lbCBoZWFkZXIgYWdyZWVzKSIKCWVsc2UKCQliYWQgY2hhbm5lbC1vZmYgIm1vZHVsZSAkZ290IHZzIGtlcm5lbCAkd2FudCAtIGJ1aWx0IGFnYWluc3QgYSBmb3JlaWduIGh5cGVydi5oIgoJZmkKZWxpZiBbIC1uICIkZ290IiBdOyB0aGVuCglub3RlIGNoYW5uZWwtb2ZmICIkZ290IChrZXJuZWwgaGVhZGVyIHVuYXZhaWxhYmxlOyB2ZXJpZnkgYnkgaGFuZCkiCmVsc2UKCWJhZCBjaGFubmVsLW9mZiAiY2Fubm90IGxvY2F0ZSB0aGUgaGRldi0+Y2hhbm5lbCBsb2FkIGluIGR4Z19wcm9iZV92bWJ1cyIKZmkKCiMgLS0tIDMuIEdQVS1QViBjaGFubmVsIEdVSUQgYWxpYXNlcyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQptb2RpbmZvX291dD0kKG1vZGluZm8gIiRLTyIgMj4vZGV2L251bGwgfHwgdHJ1ZSkKWyAtbiAiJG1vZGluZm9fb3V0IiBdIHx8IG1vZGluZm9fb3V0PSQocmVhZGVsZiAtcCAubW9kaW5mbyAiJEtPIiAyPi9kZXYvbnVsbCB8fCBzdHJpbmdzICIkS08iKQppZiBwcmludGYgJyVzJyAiJG1vZGluZm9fb3V0IiB8IGdyZXAgLXEgJ3ZtYnVzOjE4MmQzODZlMzYzMzRiNGZhY2M0MmI3NzAzZDRkZjRhJyAmJgogICBwcmludGYgJyVzJyAiJG1vZGluZm9fb3V0IiB8IGdyZXAgLXEgJ3ZtYnVzOmMwY2JlOWRkNjA1MDM2NDQ5NDQ4ZWExMjU0YTVkMTc3JzsgdGhlbgoJbm90ZSBndWlkLWFsaWFzZXMgImJvdGggZHhnIGNoYW5uZWwgR1VJRHMgcHJlc2VudCIKZWxzZQoJYmFkIGd1aWQtYWxpYXNlcyAiYSBHUFUtUFYgY2hhbm5lbCBHVUlEIGFsaWFzIGlzIG1pc3NpbmcgKGh5cGVydl9ncHVwLmggbm90IGluY2x1ZGVkPykiCmZpCgojIC0tLSA0LiBVQVBJIEFCSSB2cyB0aGUgaGVhZGVyIGFscmVhZHkgaW4gdXNlIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KaWYgWyAtbiAiJE9USEVSIiBdICYmIFsgLWYgIiRPVEhFUiIgXTsgdGhlbgoJcHJvYmU9JChmaW5kIC91c3Ivc3JjIC1tYXhkZXB0aCA2IC1wYXRoICcqdWFwaS9taXNjL2QzZGttdGhrLmgnIDI+L2Rldi9udWxsIHwgaGVhZCAtMSkKCWlmIFsgLW4gIiRwcm9iZSIgXTsgdGhlbgoJCXQ9JChta3RlbXAgLWQgIiR7VE1QRElSOi0vdG1wfS9ncHVwdi1hYmkuWFhYWFhYIikKCQkjIExldCB0aGUgc3lzdGVtJ3MgPGxpbnV4L3R5cGVzLmg+IHByb3ZpZGUgX191OC4uL19fdTY0OiBkZWZpbmluZyB0aGVtCgkJIyBieSBoYW5kIGNvbGxpZGVzIHdpdGggZ2xpYmMncyBhc20vdHlwZXMuaCBhbmQgdGhlIGhlYWRlciB0aGVuIGZhaWxzIHRvCgkJIyBwYXJzZSwgd2hpY2ggdXNlZCB0byBiZSByZXBvcnRlZCBhcyBhbiBBQkkgbWlzbWF0Y2guCgkJY2F0ID4gIiR0L2EuYyIgPDwnRU9GJwojaW5jbHVkZSA8c3RkaW8uaD4KI2luY2x1ZGUgPHN0ZGludC5oPgojaW5jbHVkZSA8bGludXgvdHlwZXMuaD4KI2lmbmRlZiBfX3VzZXIKI2RlZmluZSBfX3VzZXIKI2VuZGlmCiNpbmNsdWRlIFVBUEkKaW50IG1haW4odm9pZCkgewoJcHJpbnRmKCIlenUgJXp1ICV6dVxuIiwKCQlzaXplb2Yoc3RydWN0IGQzZGRkaV9zeW5jaHJvbml6YXRpb25vYmplY3RpbmZvMiksCgkJc2l6ZW9mKHN0cnVjdCBkM2RrbXRfY3JlYXRlc3luY2hyb25pemF0aW9ub2JqZWN0MiksCgkJc2l6ZW9mKHN0cnVjdCBkM2RrbXRfY3JlYXRlYWxsb2NhdGlvbikpOwoJcmV0dXJuIDA7Cn0KRU9GCgkJYT0kKGdjYyAtRFVBUEk9IlwiJHByb2JlXCIiIC1vICIkdC9hIiAiJHQvYS5jIiAyPi9kZXYvbnVsbCAmJiAiJHQvYSIpCgkJYj0kKGdjYyAtRFVBUEk9IlwiJE9USEVSXCIiIC1vICIkdC9iIiAiJHQvYS5jIiAyPi9kZXYvbnVsbCAmJiAiJHQvYiIpCgkJcm0gLXJmICIkdCIKCQlpZiBbIC16ICIkYSIgXSB8fCBbIC16ICIkYiIgXTsgdGhlbgoJCQkjIGEgaGVhZGVyIHRoYXQgd2lsbCBub3QgcGFyc2Ugc3RhbmRhbG9uZSB0ZWxscyB1cyBub3RoaW5nIGFib3V0IHRoZQoJCQkjIGxheW91dDsgc2F5IHNvIGluc3RlYWQgb2YgcmVwb3J0aW5nIGEgZmFsc2UgQUJJIG1pc21hdGNoCgkJCW5vdGUgdWFwaS1hYmkgImluY29uY2x1c2l2ZSAoYSBoZWFkZXIgZmFpbGVkIHRvIHBhcnNlIHN0YW5kYWxvbmU6IGluLXVzZSBbJHthOi1mYWlsfV0gbmV3IFske2I6LWZhaWx9XSkgLSBjb21wYXJlIGJ5IGhhbmQiCgkJZWxpZiBbICIkYSIgPSAiJGIiIF07IHRoZW4KCQkJbm90ZSB1YXBpLWFiaSAiaWRlbnRpY2FsICgkYSkiCgkJZWxzZQoJCQliYWQgdWFwaS1hYmkgImRpZmZlcnM6IGluLXVzZSBbJGFdIHZzIG5ldyBbJGJdIC0gYW4gaW5zdGFsbGVkIGxpYmN1ZGEgd291bGQgbWlzcmVhZCBpb2N0bCBhcmdzIgoJCWZpCgllbHNlCgkJbm90ZSB1YXBpLWFiaSAic2tpcHBlZCAobm8gZGVwbG95ZWQgZDNka210aGsuaCB0byBjb21wYXJlKSIKCWZpCmVsc2UKCW5vdGUgdWFwaS1hYmkgInNraXBwZWQgKHBhc3MgYSBzZWNvbmQgZDNka210aGsuaCB0byBjb21wYXJlKSIKZmkKCmlmIFsgIiRmYWlsIiAtZXEgMCBdOyB0aGVuCgllY2hvICJBTEwgR0FURVMgUEFTUyAtIHN0aWxsIG5vdCBwcm9vZjogbG9hZCBpdCwgdGhlbiBydW4gdGhlIGd1ZXN0IHNjcmlwdCdzICd2ZXJpZnknIgplbHNlCgllY2hvICJHQVRFUyBGQUlMRUQgLSBkbyBub3QgaW5zbW9kIHRoaXMgbW9kdWxlIgpmaQpleGl0ICIkZmFpbCIK'
 
+# ====================== lib/deps.sh ======================
+# lib/deps.sh - the guest-side build toolchain.
+#
+# A stock fnOS install does not ship a C compiler: `make` exists (kbuild needs it)
+# but `gcc` does not, so `make -C /lib/modules/.../build M=...` dies with
+#   /bin/sh: 1: gcc: not found
+#   make[3]: *** [scripts/Makefile.build:287: dxgmodule.o] Error 127
+# and the build log's only clue is Error 127. Check for the whole set up front and
+# install it in one apt call, rather than discovering them one failed build later.
+#
+# Packages needed on a Debian/fnOS guest to build an out-of-tree kernel module:
+#   gcc        the compiler the kernel was built with (Debian 12 = gcc-12)
+#   make       kbuild
+#   xz-utils   to read/write dxgkrnl.ko.xz
+#   bc         kernel version arithmetic in kbuild
+#   bison flex the .c/.h parsers kbuild generates
+#   libelf-dev libssl-dev zlib1g-dev   objtool / module signing / compression
+#   dwarves    pahole, only needed when module BTF is generated
+#   kmod       depmod/modprobe/insmod
+#   dkms       optional, only for --dkms
+
+DEPS_PKGS="gcc make xz-utils bc bison flex libelf-dev libssl-dev zlib1g-dev dwarves kmod"
+
+# command -> package, for the ones whose binary name differs
+_deps_bin_pkg() {
+	case "$1" in
+		gcc) echo gcc ;;
+		make) echo make ;;
+		xz) echo xz-utils ;;
+		bc) echo bc ;;
+		bison) echo bison ;;
+		flex) echo flex ;;
+		depmod|modprobe|insmod) echo kmod ;;
+		pahole) echo dwarves ;;
+		*) echo "$1" ;;
+	esac
+}
+
+# What is missing, one binary per line. Header files are checked separately.
+_deps_missing_bins() {
+	local b
+	for b in gcc make xz bc bison flex depmod; do
+		have "$b" || echo "$b"
+	done
+}
+
+_deps_missing_headers() {
+	[ -f /usr/include/libelf.h ] || echo libelf-dev
+	[ -f /usr/include/openssl/ssl.h ] || echo libssl-dev
+	[ -f /usr/include/zlib.h ] || echo zlib1g-dev
+}
+
+cmd_deps() {
+	local do_install=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--install|-y) do_install=1; shift ;;
+			*) shift ;;
+		esac
+	done
+
+	say "build toolchain"
+	note "kernel headers  $([ -d "/lib/modules/$(kver)/build" ] && echo "present (/lib/modules/$(kver)/build)" || echo "MISSING - install linux-headers-$(kver)")"
+
+	local missing="" pkgs="" b p
+	while IFS= read -r b; do
+		[ -n "$b" ] || continue
+		missing="$missing $b"
+	done < <(_deps_missing_bins)
+	while IFS= read -r p; do
+		[ -n "$p" ] || continue
+		pkgs="$pkgs $p"
+	done < <(_deps_missing_headers)
+
+	if [ -z "$missing" ] && [ -z "$pkgs" ]; then
+		mark_ok "gcc make xz bc bison flex depmod + libelf/libssl/zlib headers"
+		have dkms && note "dkms present (only needed for module build --dkms)"
+		note "gcc: $(gcc --version 2>/dev/null | head -1)"
+		return 0
+	fi
+
+	[ -n "$missing" ] && mark_fail "missing binaries:$missing" "- these are what break the build with Error 127"
+	[ -n "$pkgs" ] && mark_fail "missing headers:$pkgs" "- objtool / compression / module signing"
+
+	if [ "$do_install" -eq 0 ]; then
+		note ""
+		note "install with:  sudo $PROG deps --install"
+		return 1
+	fi
+
+	need_root deps --install
+	have apt-get || die "no apt-get; install manually:$pkgs $(_deps_bin_pkg_list "$missing")"
+
+	# Map binaries to packages, dedupe, and keep the fixed list order.
+	for b in $missing; do
+		pkgs="$pkgs $(_deps_bin_pkg "$b")"
+	done
+	pkgs=$(printf '%s\n' $pkgs | awk '!seen[$0]++' | tr '\n' ' ')
+
+	sub "apt-get install $pkgs"
+	DEBIAN_FRONTEND=noninteractive apt-get update -qq || warn "apt-get update failed (continuing with the cached index)"
+	if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $pkgs; then
+		mark_ok "installed:$pkgs"
+	else
+		mark_fail "apt-get install failed" "- install manually:$pkgs"
+		return 1
+	fi
+
+	# the very command that failed before must now work
+	if gcc --version >/dev/null 2>&1; then
+		note "gcc: $(gcc --version | head -1)"
+		return 0
+	fi
+	die "gcc still not runnable after installing $pkgs"
+}
+
+_deps_bin_pkg_list() {
+	local b out=""
+	for b in $1; do out="$out $(_deps_bin_pkg "$b")"; done
+	printf '%s' "$out"
+}
+
+# Interactive-free variant for callers (module build, setup): install when root,
+# otherwise fail with the exact command to run.
+deps_ensure() {
+	local missing pkgs
+	missing=$(_deps_missing_bins | tr '\n' ' ')
+	pkgs=$(_deps_missing_headers | tr '\n' ' ')
+	[ -z "$missing" ] && [ -z "$pkgs" ] && return 0
+
+	if is_root; then
+		cmd_deps --install
+		return $?
+	fi
+	{
+		printf 'ERROR build toolchain incomplete:'
+		[ -n "$missing" ] && printf ' binaries:%s' "$missing"
+		[ -n "$pkgs" ] && printf ' headers:%s' "$pkgs"
+		printf '\n'
+		printf '      install with:  sudo %s deps --install\n' "$PROG"
+	} >&2
+	return 1
+}
+
 # ====================== lib/triage.sh ======================
 # lib/triage.sh - root-free guest triage. Decides which side is broken before
 # anything is rebuilt, copied or re-assigned.
@@ -541,7 +688,19 @@ cmd_verify() {
 		summary "gates"; return $?
 	fi
 
-	say "gate 2/5: userland payload shape"
+	say "gate 2/5: userland (loaders + payload)"
+	# Both halves are required and they fail differently: no loaders means nothing
+	# to call at all, a trimmed payload means nvidia-smi works and cuInit does not.
+	local lc=0
+	[ -e "$WSL_LIB/libcuda.so.1" ] && lc=$((lc + 1))
+	[ -e "$WSL_LIB/libnvidia-ml.so.1" ] && lc=$((lc + 1))
+	[ -e "$WSL_LIB/libdxcore.so" ] && lc=$((lc + 1))
+	if [ "$lc" -eq 3 ]; then
+		mark_ok "loaders present in $WSL_LIB"
+	else
+		mark_fail "loaders missing in $WSL_LIB ($lc/3)" "- deploy ExHyperV's lib/: sudo $PROG loaders install <lib dir>"
+	fi
+
 	local ds
 	if ds=$(ds_pick); then
 		local n ns
@@ -550,10 +709,10 @@ cmd_verify() {
 		if [ "$n" -ge 150 ] && [ "$ns" -gt 0 ]; then
 			mark_ok "driverstore complete"
 		else
-			mark_fail "driverstore trimmed" "expected ~153 files with metadata; see: $PROG driverstore install"
+			mark_fail "driverstore trimmed" "expected ~150 files with metadata; see: $PROG driverstore install"
 		fi
 	else
-		mark_fail "no DriverStore directory found" "$WSL_DRIVERS/$NVSTORE_GLOB"
+		mark_fail "no DriverStore payload deployed" "$WSL_DRIVERS/$NVSTORE_GLOB"
 	fi
 
 	say "gate 3/5: NVML (monitoring path only)"
@@ -964,6 +1123,9 @@ cmd_module_build() {
 	done
 	have make || die "make not found"
 	have curl || die "curl not found"
+	# A stock fnOS has make but no gcc: fail here with the package list instead
+	# of inside kbuild as "/bin/sh: 1: gcc: not found / Error 127".
+	deps_ensure || exit 1
 	local k
 	k=$(kver)
 	[ -d "/lib/modules/$k/build" ] || die "no kernel build tree at /lib/modules/$k/build (install linux-headers-$k)"
@@ -1027,6 +1189,16 @@ EOF
 	else
 		mark_fail "compile failed" "see $log"
 		grep -E 'error|Error' "$log" | head -15 | sed 's/^/  /'
+		# The two failures that are not a code problem: a missing compiler and a
+		# missing tool. Name the fix instead of leaving Error 127 bare.
+		if grep -qE 'gcc: not found|cc1: not found|Error 127' "$log"; then
+			note ""
+			note "the compiler is missing, not the source:  sudo $PROG deps --install"
+		elif grep -qE 'objtool|resolve_btfids|make.*: .*No such file' "$log"; then
+			note ""
+			note "kbuild tool missing (objtool / resolve_btfids) - install the kernel toolchain:"
+			note "  sudo $PROG deps --install"
+		fi
 		return 1
 	fi
 	grep -E 'unreachable instruction|Skipping BTF' "$log" >/dev/null 2>&1 && \
@@ -1199,9 +1371,40 @@ _ds_target() {
 	if [ -n "${1:-}" ]; then
 		[ -d "$1" ] || die "not a directory: $1"
 		printf '%s\n' "$1"
-	else
-		ds_pick || die "no unique $WSL_DRIVERS/$NVSTORE_GLOB (pass --driverstore DIR)"
+		return 0
 	fi
+	ds_pick && return 0
+	# Nothing deployed yet: a fresh guest has no $WSL_DRIVERS at all, so this is
+	# the normal state before the first install - not an error.
+	return 1
+}
+
+# The folder name DXCore asks for is the HOST's nv_dispi.inf_amd64_<hash> leaf.
+# On a fresh guest there is nothing to read it from, so take it from the incoming
+# directory (or --name), and refuse to invent one: a wrong name is invisible
+# until cuInit fails.
+_ds_target_for_install() {
+	local explicit=${1:-} src=${2:-} name=${3:-}
+
+	if [ -n "$explicit" ]; then
+		[ -d "$explicit" ] || die "not a directory: $explicit"
+		printf '%s\n' "$explicit"
+		return 0
+	fi
+	if ds_pick 2>/dev/null; then return 0; fi
+
+	if [ -z "$name" ] && [ -n "$src" ]; then
+		case "$(basename "$src")" in
+			$NVSTORE_GLOB) name=$(basename "$src") ;;
+		esac
+	fi
+	[ -n "$name" ] || die "no DriverStore folder deployed yet, and the incoming path does not name one.
+       Pass the folder itself (…/$NVSTORE_GLOB) or --name nv_dispi.inf_amd64_<hash>."
+	case "$name" in
+		$NVSTORE_GLOB) : ;;
+		*) die "--name [$name] does not look like $NVSTORE_GLOB" ;;
+	esac
+	printf '%s/%s\n' "$WSL_DRIVERS" "$name"
 }
 
 # compare the deployed copy against an incoming one: same build, or a
@@ -1210,8 +1413,8 @@ cmd_ds_compare() {
 	local incoming=${1:-}
 	[ -n "$incoming" ] || die "usage: $PROG driverstore compare <incoming dir> [--driverstore DIR]"
 	shift || true
-	local target
-	target=$(_ds_target "") || exit 1
+	local target=""
+	target=$(_ds_target "") || target=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--driverstore) target=$(_ds_target "$2"); shift 2 ;;
@@ -1221,6 +1424,16 @@ cmd_ds_compare() {
 	[ -d "$incoming" ] || die "not a directory: $incoming"
 
 	say "driverstore compare"
+	if [ -z "$target" ]; then
+		# Fresh guest: nothing is deployed, so the comparison is trivially "all of
+		# it is new". Say that instead of failing an ls on a missing directory.
+		note "deployed  none (nothing under $WSL_DRIVERS)"
+		note "incoming  $incoming ($(count_entries "$incoming") files)"
+		say "verdict"
+		note "no deployment yet - this is a first install, not a repair:"
+		note "  sudo $PROG driverstore install $incoming"
+		return 0
+	fi
 	note "deployed  $target ($(count_entries "$target") files)"
 	note "incoming  $incoming ($(count_entries "$incoming") files)"
 
@@ -1267,7 +1480,13 @@ cmd_ds_compare() {
 
 cmd_ds_status() {
 	local target
-	target=$(_ds_target "${1:-}")
+	if ! target=$(_ds_target "${1:-}"); then
+		say "driverstore status"
+		mark_fail "no DriverStore deployed" "nothing under $WSL_DRIVERS"
+		note "this is normal before the first install:"
+		note "  sudo $PROG driverstore install /tmp/nvstore"
+		return "$GPUPV_FAILS"
+	fi
 	say "driverstore status"
 	note "path   $target"
 	note "count  $(count_entries "$target") files, $(count_nonso "$target") non-.so"
@@ -1288,38 +1507,53 @@ cmd_ds_status() {
 
 cmd_ds_install() {
 	local src=${1:-}
-	[ -n "$src" ] || die "usage: sudo $PROG driverstore install <incoming dir> [--replace] [--driverstore DIR]"
+	[ -n "$src" ] || die "usage: sudo $PROG driverstore install <incoming dir|…/$NVSTORE_GLOB> [--replace] [--name DIRNAME] [--driverstore DIR]"
 	shift || true
-	local replace=0 target="" force=0
+	local replace=0 target="" force=0 name=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--replace) replace=1; shift ;;
 			--driverstore) target=$2; shift 2 ;;
+			--name) name=$2; shift 2 ;;
 			--force) force=1; shift ;;
 			*) shift ;;
 		esac
 	done
 	need_root driverstore install DIR
 	[ -d "$src" ] || die "not a directory: $src"
-	target=$(_ds_target "$target")
 
 	local nsrc
 	nsrc=$(count_entries "$src")
 	[ "$nsrc" -gt 0 ] || die "incoming directory is empty"
 
+	# Resolve the destination BEFORE anything is created: on a fresh guest the
+	# folder does not exist yet, and its name has to come from the host's leaf.
+	target=$(_ds_target_for_install "$target" "$src" "$name")
+
+	local target_existed=1
+	[ -d "$target" ] || target_existed=0
+
 	say "driverstore install"
 	note "incoming  $src ($nsrc files, $(du -sh "$src" 2>/dev/null | cut -f1))"
-	note "target    $target ($(count_entries "$target") files)"
+	if [ "$target_existed" -eq 1 ]; then
+		note "target    $target ($(count_entries "$target") files)"
+	else
+		note "target    $target (does not exist yet - first install)"
+	fi
 
 	# Refuse the mistake that looks like a fix: installing a trimmed set.
 	if [ "$nsrc" -lt 100 ] && [ "$force" -eq 0 ]; then
 		die "incoming set has only $nsrc files - a complete nv_dispi folder has ~150. Refusing (pass --force to override)."
 	fi
 
+	mkdir -p "$target" || die "cannot create $target"
+
 	# Backup once, never overwrite a good backup with a broken state - but an
 	# existing EMPTY directory is not a backup (a failed or aborted first run
 	# leaves one behind, and "reusing" it makes rollback restore nothing).
-	if [ ! -d "$DS_BACKUP" ] || [ -z "$(ls -A "$DS_BACKUP" 2>/dev/null)" ]; then
+	if [ "$target_existed" -eq 0 ]; then
+		note "backup    n/a (nothing deployed to back up)"
+	elif [ ! -d "$DS_BACKUP" ] || [ -z "$(ls -A "$DS_BACKUP" 2>/dev/null)" ]; then
 		mkdir -p "$(dirname "$DS_BACKUP")"
 		# cp -a INTO an existing directory nests it, so clear it first
 		rm -rf "$DS_BACKUP"
@@ -1336,17 +1570,48 @@ cmd_ds_install() {
 		note "mode      OVERLAY (add/replace, delete nothing the guest already has)"
 		cp -a "$src/." "$target/" || die "copy failed - restore: $PROG driverstore rollback"
 	fi
-	chmod -R a+r "$target"
+	chmod -R a+r "$target" 2>/dev/null || true
+	# the <hash> folder itself must be traversable, not just its files
+	chmod a+rx "$WSL_DRIVERS" "$target" 2>/dev/null || true
 
 	note "after     $(count_entries "$target") files, $(count_nonso "$target") non-.so"
 	nvstore_keyfiles "$target" | sed 's/^/  /'
-	[ -e /etc/ld.so.conf.d/ld.wsl.conf ] || {
-		printf '%s\n%s\n' "$WSL_LIB" "$WSL_DRIVERS" > /etc/ld.so.conf.d/ld.wsl.conf
-		note "wrote /etc/ld.so.conf.d/ld.wsl.conf"
-	}
-	ldconfig 2>/dev/null || true
+
+	# The loaders live in $WSL_LIB and only find the payload through ld.so; both
+	# directories have to be on the search path or the payload is never reached.
+	# Report a write failure instead of claiming the line was added.
+	if [ ! -e /etc/ld.so.conf.d/ld.wsl.conf ]; then
+		if mkdir -p /etc/ld.so.conf.d 2>/dev/null &&
+		   printf '%s\n%s\n' "$WSL_LIB" "$WSL_DRIVERS" > /etc/ld.so.conf.d/ld.wsl.conf 2>/dev/null; then
+			note "wrote /etc/ld.so.conf.d/ld.wsl.conf"
+		else
+			warn "cannot write /etc/ld.so.conf.d/ld.wsl.conf (needs root)"
+			note "  echo -e '$WSL_LIB\\n$WSL_DRIVERS' | sudo tee /etc/ld.so.conf.d/ld.wsl.conf && sudo ldconfig"
+		fi
+	else
+		local d added=0
+		for d in "$WSL_LIB" "$WSL_DRIVERS"; do
+			grep -qx "$d" /etc/ld.so.conf.d/ld.wsl.conf 2>/dev/null && continue
+			# the redirect must be silenced in a subshell: `cmd >> f 2>/dev/null`
+			# still prints the shell's own "Permission denied" for the redirect
+			if ( printf '%s\n' "$d" >> /etc/ld.so.conf.d/ld.wsl.conf ) 2>/dev/null; then
+				note "added $d to /etc/ld.so.conf.d/ld.wsl.conf"
+				added=1
+			else
+				warn "cannot append $d to /etc/ld.so.conf.d/ld.wsl.conf (needs root)"
+			fi
+		done
+		[ "$added" -eq 1 ] && have ldconfig && ldconfig 2>/dev/null || true
+	fi
+	have ldconfig && ldconfig 2>/dev/null || true
 
 	say "real consumer test (never nvidia-smi)"
+	if [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
+		mark_fail "cannot test cuInit: $WSL_LIB/libcuda.so.1 missing" \
+			"- the loaders are not deployed (they come from ExHyperV's lib/), the payload alone cannot run"
+		note "the DriverStore copy above is still correct; install the loaders, then re-run: $PROG verify"
+		return "$GPUPV_FAILS"
+	fi
 	local rc
 	timeout 60 python3 -c 'import ctypes,sys; sys.exit(0 if ctypes.CDLL("/usr/lib/wsl/lib/libcuda.so.1").cuInit(0)==0 else 1)'
 	rc=$?
@@ -1355,7 +1620,7 @@ cmd_ds_install() {
 		note "now run: $PROG verify"
 	else
 		mark_fail "cuInit" "rc=$rc (139 = SIGSEGV)"
-		note "not fixed by this payload. Roll back: sudo $PROG driverstore rollback"
+		note "payload is in place but CUDA still fails. Roll back: sudo $PROG driverstore rollback"
 		note "then: $PROG doctor   (module ABI + LD_DEBUG trace, in that order)"
 	fi
 	return "$GPUPV_FAILS"
@@ -1389,6 +1654,150 @@ cmd_driverstore() {
 		install)             cmd_ds_install "$@" ;;
 		rollback|restore)    cmd_ds_rollback "$@" ;;
 		*) die "unknown: driverstore $sub (status|compare|install|rollback)" ;;
+	esac
+}
+
+# ====================== lib/loaders.sh ======================
+# lib/loaders.sh - deploy ExHyperV's `lib/` folder: the thin loaders in
+# /usr/lib/wsl/lib that turn the DriverStore payload into something applications
+# can call.
+#
+# Two directories, two jobs (both are required; neither alone is enough):
+#   /usr/lib/wsl/lib          loaders      libcuda.so.1.1 ~171 KB, libnvidia-ml.so.1 ~267 KB,
+#                                          libdxcore.so, libd3d12*.so, nvidia-smi
+#   /usr/lib/wsl/drivers/<f>  payload      libcuda.so.1.1 ~25 MB + every data file
+#
+# The loaders ask DXCore for the payload's driver-store path and dlopen it from
+# there, so the driver directory must also be on ld.so's search path. Deploying
+# them by hand is where most stalled installs stop: the payload copy looks right,
+# `nvidia-smi` says "couldn't communicate with the NVIDIA driver", and the real
+# cause is that no loader was ever installed.
+
+LOADER_CONF=/etc/ld.so.conf.d/ld.wsl.conf
+
+cmd_loaders_status() {
+	say "loaders ($WSL_LIB)"
+	if [ ! -d "$WSL_LIB" ]; then
+		mark_fail "$WSL_LIB missing" "- nothing to load the payload with"
+		note "deploy ExHyperV's lib/ folder:  sudo $PROG loaders install <path/to/lib>"
+		return "$GPUPV_FAILS"
+	fi
+	local f n=0
+	for f in libcuda.so.1 libnvidia-ml.so.1 libdxcore.so nvidia-smi; do
+		if [ -e "$WSL_LIB/$f" ]; then
+			printf '  present %-22s %s bytes\n' "$f" "$(stat -c%s "$WSL_LIB/$f" 2>/dev/null)"
+			n=$((n + 1))
+		else
+			printf '  MISSING %s\n' "$f"
+		fi
+	done
+	if [ "$n" -ge 3 ]; then mark_ok "loaders present ($n/4 key files)"; else
+		mark_fail "loaders incomplete ($n/4 key files)" "- copy the whole lib/ folder, not selected files"
+	fi
+	sub "ld.so search path"
+	if [ -r "$LOADER_CONF" ]; then
+		sed 's/^/  /' "$LOADER_CONF"
+		grep -qx "$WSL_LIB" "$LOADER_CONF" || mark_fail "$WSL_LIB not on the ld.so path"
+		grep -qx "$WSL_DRIVERS" "$LOADER_CONF" || mark_fail "$WSL_DRIVERS not on the ld.so path"
+	else
+		mark_fail "$LOADER_CONF missing" "- payload and loaders are both unreachable without it"
+	fi
+	return "$GPUPV_FAILS"
+}
+
+cmd_loaders_install() {
+	local src=${1:-}
+	[ -n "$src" ] || die "usage: sudo $PROG loaders install <path/to/ExHyperV/lib> [--driverstore DIR]"
+	shift || true
+	local dstdrv=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--driverstore) dstdrv=$2; shift 2 ;;
+			*) shift ;;
+		esac
+	done
+	need_root loaders install LIBDIR
+	[ -d "$src" ] || die "not a directory: $src"
+	local n
+	n=$(count_entries "$src")
+	[ "$n" -gt 0 ] || die "$src is empty"
+
+	say "loaders install"
+	note "source   $src ($n files)"
+	note "target   $WSL_LIB"
+
+	# Back up an existing set rather than overwriting it silently: a loader set
+	# that matches the payload is worth keeping if this one is older.
+	if [ -d "$WSL_LIB" ] && [ "$(count_entries "$WSL_LIB")" -gt 0 ]; then
+		local bk="${LOADER_BACKUP:-/var/lib/gpupv/loaders-backup}"
+		if [ ! -d "$bk" ]; then
+			mkdir -p "$(dirname "$bk")"
+			cp -a "$WSL_LIB" "$bk" || die "backup failed - nothing changed"
+			note "backup   $bk ($(count_entries "$bk") files)"
+		else
+			note "backup   reusing $bk"
+		fi
+	fi
+
+	mkdir -p "$WSL_LIB"
+	cp -a "$src/." "$WSL_LIB/" || die "copy failed"
+	chmod -R a+r "$WSL_LIB" 2>/dev/null || true
+
+	# The tooling (and ExHyperV's own script) expects these two links to exist.
+	[ -e "$WSL_LIB/libd3d12core.so" ] && ln -sf "$WSL_LIB/libd3d12core.so" "$WSL_LIB/libD3D12Core.so" 2>/dev/null || true
+	if [ -e "$WSL_LIB/libcuda.so.1" ]; then
+		mkdir -p /usr/lib/x86_64-linux-gnu
+		ln -sf "$WSL_LIB/libcuda.so.1" /usr/lib/x86_64-linux-gnu/libcuda.so.1 2>/dev/null || true
+		ln -sf "$WSL_LIB/libcuda.so.1" /usr/lib/x86_64-linux-gnu/libcuda.so 2>/dev/null || true
+	fi
+	if [ -e "$WSL_LIB/nvidia-smi" ]; then
+		install -m 755 "$WSL_LIB/nvidia-smi" /usr/bin/nvidia-smi 2>/dev/null || \
+			cp "$WSL_LIB/nvidia-smi" /usr/bin/nvidia-smi
+		chmod 755 /usr/bin/nvidia-smi
+		note "nvidia-smi -> /usr/bin/nvidia-smi"
+	fi
+	mark_ok "copied $n files"
+
+	# Both directories on the search path: the loaders live in one, the payload
+	# the loaders dlopen lives in the other.
+	sub "ld.so search path"
+	mkdir -p /etc/ld.so.conf.d
+	if [ ! -e "$LOADER_CONF" ]; then
+		printf '%s\n%s\n' "$WSL_LIB" "$WSL_DRIVERS" > "$LOADER_CONF"
+		note "wrote $LOADER_CONF"
+	else
+		grep -qx "$WSL_LIB" "$LOADER_CONF" || { printf '%s\n' "$WSL_LIB" >> "$LOADER_CONF"; note "added $WSL_LIB"; }
+		grep -qx "$WSL_DRIVERS" "$LOADER_CONF" || { printf '%s\n' "$WSL_DRIVERS" >> "$LOADER_CONF"; note "added $WSL_DRIVERS"; }
+	fi
+	have ldconfig && ldconfig 2>/dev/null || true
+
+	cmd_loaders_status >/dev/null 2>&1 || true
+	say "next"
+	note "the payload still has to be present for cuInit to work:"
+	note "  sudo $PROG driverstore status"
+	note "  $PROG verify"
+	return 0
+}
+
+cmd_loaders_rollback() {
+	need_root loaders rollback
+	local bk="${LOADER_BACKUP:-/var/lib/gpupv/loaders-backup}"
+	[ -d "$bk" ] || die "no backup at $bk"
+	say "loaders rollback"
+	rm -rf "$WSL_LIB" && cp -a "$bk" "$WSL_LIB" || die "restore failed"
+	chmod -R a+r "$WSL_LIB" 2>/dev/null || true
+	have ldconfig && ldconfig 2>/dev/null || true
+	note "restored $WSL_LIB ($(count_entries "$WSL_LIB") files)"
+}
+
+cmd_loaders() {
+	local sub=${1:-status}
+	[ $# -gt 0 ] && shift
+	case "$sub" in
+		status)            cmd_loaders_status "$@" ;;
+		install|add)       cmd_loaders_install "$@" ;;
+		rollback|restore)  cmd_loaders_rollback "$@" ;;
+		*) die "unknown: loaders $sub (status|install|rollback)" ;;
 	esac
 }
 
@@ -1618,22 +2027,28 @@ gpupv-fnos.sh $GPUPV_VERSION - Hyper-V GPU-PV tool for the Linux guest
 
 usage: sudo ./gpupv-fnos.sh <command> [options]
 
+  deps [--install]           check the build toolchain (gcc, xz, bc, bison, flex,
+                             libelf/libssl/zlib headers); --install apt-get's what is missing
   triage                     root-free triage: module / device / VMBus / libs / NVML
   verify [--quick]           functional gates (quick = skip the codec matrix)
   probe                      build + run the /dev/dxg probe (kernel path only)
   doctor                     deep diagnosis: ABI gates, payload trace, hung probes
-  report [--out FILE]        write a markdown evidence report
-  setup                      do the whole guest side: module + driverstore + service
+  report [--out FILE]        write a markdown evidence file
+  setup [DRIVERSTORE_DIR]    the whole guest side: deps + module + driverstore + service + gates
 
   module build [--branch auto|wsl-6.18.y|wsl-6.6.y] [--out DIR] [--dkms]
-  module verify <ko>
+  module verify <ko|ko.xz>
   module install <ko> [--no-backup]
   module restore [--list]
 
   driverstore status [DIR]
   driverstore compare DIR [--driverstore DIR]
-  driverstore install DIR [--replace] [--driverstore DIR]
+  driverstore install DIR [--replace] [--name DIRNAME] [--driverstore DIR]
   driverstore rollback [--driverstore DIR]
+
+  loaders status             /usr/lib/wsl/lib: the thin loaders + nvidia-smi + ld.so path
+  loaders install LIBDIR     deploy ExHyperV's lib/ folder (the other half of the stack)
+  loaders rollback
 
   receive [DIR] [PORT]       HTTP PUT receiver for the host's DriverStore (default
                              /tmp/nvstore 8899) - for hosts without an SSH path
@@ -1644,6 +2059,13 @@ usage: sudo ./gpupv-fnos.sh <command> [options]
 
   help | version
 
+notes:
+  * DRIVERSTORE_DIR should be the host's nv_dispi.inf_amd64_<hash> folder itself.
+    On a fresh guest nothing is deployed yet, so the folder name comes from that
+    path; pass --name if you unpacked it into a generically named directory.
+  * a stock fnOS has no gcc. 'setup' and 'module build' install the toolchain
+    automatically when run as root; 'deps' shows what is missing without root.
+
 environment:
   WSL_LIB, WSL_DRIVERS, FFMPEG, GPUPV_CACHE, GPUPV_DRIVERSTORE, NO_COLOR
 
@@ -1653,22 +2075,41 @@ host side (Windows, Administrator PowerShell):
 EOF
 }
 
-# One-shot guest setup: build+install the module if it is missing, install the
-# DriverStore from a directory if one is given, then wire up the boot service and
-# finish with the real gates. Every step is skippable by state, so re-running it
-# is safe.
+# One-shot guest setup: toolchain -> module -> DriverStore -> boot service -> gates.
+# Every step is skippable by state, so re-running it is safe.
 cmd_setup() {
-	local src=""
+	local src="" libdir="" leafname=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--driverstore) src=$2; shift 2 ;;
+			--loaders)     libdir=$2; shift 2 ;;
+			--name)        leafname=$2; shift 2 ;;
 			*) src=$1; shift ;;
 		esac
 	done
 	need_root
 	say "setup: guest side"
-	note "kernel $GPUPV_KERNEL_RUNNING"
+	note "kernel  $GPUPV_KERNEL_RUNNING"
 
+	# 1. toolchain first: without gcc the module step dies as Error 127, and that
+	#    reads like a broken source tree.
+	sub "build toolchain"
+	if deps_ensure; then
+		mark_ok "toolchain ready"
+	else
+		die "cannot continue without a compiler - install the toolchain, then re-run setup"
+	fi
+
+	# 2. loaders (ExHyperV's lib/) - the payload alone cannot be loaded
+	if [ -n "$libdir" ]; then
+		sub "loaders from $libdir"
+		cmd_loaders_install "$libdir" || warn "loaders install reported a problem"
+	elif [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
+		warn "no loaders at $WSL_LIB - cuInit cannot work without them"
+		note "  sudo $PROG loaders install <ExHyperV>/lib"
+	fi
+
+	# 3. the module
 	local need_mod=0
 	if lsmod 2>/dev/null | grep -q '^dxgkrnl' && [ -e /dev/dxg ]; then
 		mark_ok "dxgkrnl already loaded with /dev/dxg"
@@ -1683,11 +2124,17 @@ cmd_setup() {
 		sub "installing $ko"
 		cmd_module_install "$ko" --live || die "module install failed - see dmesg"
 	else
-		note "skipping the module step"
+		note "skipping the module step (already loaded)"
 	fi
+
+	# 4. the DriverStore payload
 	if [ -n "$src" ]; then
 		sub "installing DriverStore from $src"
-		cmd_ds_install "$src" || warn "driverstore install reported a problem (see above)"
+		if [ -n "$leafname" ]; then
+			cmd_ds_install "$src" --name "$leafname" || warn "driverstore install reported a problem (see above)"
+		else
+			cmd_ds_install "$src" || warn "driverstore install reported a problem (see above)"
+		fi
 	else
 		local ds
 		ds=$(ds_pick || true)
@@ -1695,12 +2142,16 @@ cmd_setup() {
 			mark_ok "DriverStore already complete at $ds"
 		else
 			warn "DriverStore is missing or trimmed - the guest will show NVML without CUDA"
-			note "on the host:  .\\gpupv-windows.ps1 -Action Push"
-			note "then here:    sudo ./gpupv-fnos.sh driverstore install /tmp/nvstore"
+			note "re-run with the folder:   sudo $PROG setup <dir>/$NVSTORE_GLOB"
+			note "or:                       sudo $PROG driverstore install <dir> --name nv_dispi.inf_amd64_<hash>"
 		fi
 	fi
+
+	# 5. boot persistence
 	sub "boot service"
 	cmd_service_install --selftest || warn "service install failed"
+
+	# 6. the real gates
 	say "final gates"
 	cmd_verify
 }
@@ -1710,6 +2161,7 @@ main() {
 	local cmd=$1
 	shift
 	case "$cmd" in
+		deps|dep)           cmd_deps "$@" ;;
 		triage)             cmd_triage "$@" ;;
 		verify)             cmd_verify "$@" ;;
 		probe)              cmd_probe "$@" ;;
@@ -1718,6 +2170,7 @@ main() {
 		setup)              cmd_setup "$@" ;;
 		module)             cmd_module "$@" ;;
 		driverstore|ds)     cmd_driverstore "$@" ;;
+		loaders|wl)         cmd_loaders "$@" ;;
 		service)            cmd_service "$@" ;;
 		receive|serve)      cmd_receive "$@" ;;
 		version|--version|-V) echo "gpupv-fnos.sh $GPUPV_VERSION" ;;

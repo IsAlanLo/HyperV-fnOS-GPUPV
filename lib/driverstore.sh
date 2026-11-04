@@ -13,9 +13,40 @@ _ds_target() {
 	if [ -n "${1:-}" ]; then
 		[ -d "$1" ] || die "not a directory: $1"
 		printf '%s\n' "$1"
-	else
-		ds_pick || die "no unique $WSL_DRIVERS/$NVSTORE_GLOB (pass --driverstore DIR)"
+		return 0
 	fi
+	ds_pick && return 0
+	# Nothing deployed yet: a fresh guest has no $WSL_DRIVERS at all, so this is
+	# the normal state before the first install - not an error.
+	return 1
+}
+
+# The folder name DXCore asks for is the HOST's nv_dispi.inf_amd64_<hash> leaf.
+# On a fresh guest there is nothing to read it from, so take it from the incoming
+# directory (or --name), and refuse to invent one: a wrong name is invisible
+# until cuInit fails.
+_ds_target_for_install() {
+	local explicit=${1:-} src=${2:-} name=${3:-}
+
+	if [ -n "$explicit" ]; then
+		[ -d "$explicit" ] || die "not a directory: $explicit"
+		printf '%s\n' "$explicit"
+		return 0
+	fi
+	if ds_pick 2>/dev/null; then return 0; fi
+
+	if [ -z "$name" ] && [ -n "$src" ]; then
+		case "$(basename "$src")" in
+			$NVSTORE_GLOB) name=$(basename "$src") ;;
+		esac
+	fi
+	[ -n "$name" ] || die "no DriverStore folder deployed yet, and the incoming path does not name one.
+       Pass the folder itself (…/$NVSTORE_GLOB) or --name nv_dispi.inf_amd64_<hash>."
+	case "$name" in
+		$NVSTORE_GLOB) : ;;
+		*) die "--name [$name] does not look like $NVSTORE_GLOB" ;;
+	esac
+	printf '%s/%s\n' "$WSL_DRIVERS" "$name"
 }
 
 # compare the deployed copy against an incoming one: same build, or a
@@ -24,8 +55,8 @@ cmd_ds_compare() {
 	local incoming=${1:-}
 	[ -n "$incoming" ] || die "usage: $PROG driverstore compare <incoming dir> [--driverstore DIR]"
 	shift || true
-	local target
-	target=$(_ds_target "") || exit 1
+	local target=""
+	target=$(_ds_target "") || target=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--driverstore) target=$(_ds_target "$2"); shift 2 ;;
@@ -35,6 +66,16 @@ cmd_ds_compare() {
 	[ -d "$incoming" ] || die "not a directory: $incoming"
 
 	say "driverstore compare"
+	if [ -z "$target" ]; then
+		# Fresh guest: nothing is deployed, so the comparison is trivially "all of
+		# it is new". Say that instead of failing an ls on a missing directory.
+		note "deployed  none (nothing under $WSL_DRIVERS)"
+		note "incoming  $incoming ($(count_entries "$incoming") files)"
+		say "verdict"
+		note "no deployment yet - this is a first install, not a repair:"
+		note "  sudo $PROG driverstore install $incoming"
+		return 0
+	fi
 	note "deployed  $target ($(count_entries "$target") files)"
 	note "incoming  $incoming ($(count_entries "$incoming") files)"
 
@@ -81,7 +122,13 @@ cmd_ds_compare() {
 
 cmd_ds_status() {
 	local target
-	target=$(_ds_target "${1:-}")
+	if ! target=$(_ds_target "${1:-}"); then
+		say "driverstore status"
+		mark_fail "no DriverStore deployed" "nothing under $WSL_DRIVERS"
+		note "this is normal before the first install:"
+		note "  sudo $PROG driverstore install /tmp/nvstore"
+		return "$GPUPV_FAILS"
+	fi
 	say "driverstore status"
 	note "path   $target"
 	note "count  $(count_entries "$target") files, $(count_nonso "$target") non-.so"
@@ -102,38 +149,53 @@ cmd_ds_status() {
 
 cmd_ds_install() {
 	local src=${1:-}
-	[ -n "$src" ] || die "usage: sudo $PROG driverstore install <incoming dir> [--replace] [--driverstore DIR]"
+	[ -n "$src" ] || die "usage: sudo $PROG driverstore install <incoming dir|…/$NVSTORE_GLOB> [--replace] [--name DIRNAME] [--driverstore DIR]"
 	shift || true
-	local replace=0 target="" force=0
+	local replace=0 target="" force=0 name=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--replace) replace=1; shift ;;
 			--driverstore) target=$2; shift 2 ;;
+			--name) name=$2; shift 2 ;;
 			--force) force=1; shift ;;
 			*) shift ;;
 		esac
 	done
 	need_root driverstore install DIR
 	[ -d "$src" ] || die "not a directory: $src"
-	target=$(_ds_target "$target")
 
 	local nsrc
 	nsrc=$(count_entries "$src")
 	[ "$nsrc" -gt 0 ] || die "incoming directory is empty"
 
+	# Resolve the destination BEFORE anything is created: on a fresh guest the
+	# folder does not exist yet, and its name has to come from the host's leaf.
+	target=$(_ds_target_for_install "$target" "$src" "$name")
+
+	local target_existed=1
+	[ -d "$target" ] || target_existed=0
+
 	say "driverstore install"
 	note "incoming  $src ($nsrc files, $(du -sh "$src" 2>/dev/null | cut -f1))"
-	note "target    $target ($(count_entries "$target") files)"
+	if [ "$target_existed" -eq 1 ]; then
+		note "target    $target ($(count_entries "$target") files)"
+	else
+		note "target    $target (does not exist yet - first install)"
+	fi
 
 	# Refuse the mistake that looks like a fix: installing a trimmed set.
 	if [ "$nsrc" -lt 100 ] && [ "$force" -eq 0 ]; then
 		die "incoming set has only $nsrc files - a complete nv_dispi folder has ~150. Refusing (pass --force to override)."
 	fi
 
+	mkdir -p "$target" || die "cannot create $target"
+
 	# Backup once, never overwrite a good backup with a broken state - but an
 	# existing EMPTY directory is not a backup (a failed or aborted first run
 	# leaves one behind, and "reusing" it makes rollback restore nothing).
-	if [ ! -d "$DS_BACKUP" ] || [ -z "$(ls -A "$DS_BACKUP" 2>/dev/null)" ]; then
+	if [ "$target_existed" -eq 0 ]; then
+		note "backup    n/a (nothing deployed to back up)"
+	elif [ ! -d "$DS_BACKUP" ] || [ -z "$(ls -A "$DS_BACKUP" 2>/dev/null)" ]; then
 		mkdir -p "$(dirname "$DS_BACKUP")"
 		# cp -a INTO an existing directory nests it, so clear it first
 		rm -rf "$DS_BACKUP"
@@ -150,17 +212,48 @@ cmd_ds_install() {
 		note "mode      OVERLAY (add/replace, delete nothing the guest already has)"
 		cp -a "$src/." "$target/" || die "copy failed - restore: $PROG driverstore rollback"
 	fi
-	chmod -R a+r "$target"
+	chmod -R a+r "$target" 2>/dev/null || true
+	# the <hash> folder itself must be traversable, not just its files
+	chmod a+rx "$WSL_DRIVERS" "$target" 2>/dev/null || true
 
 	note "after     $(count_entries "$target") files, $(count_nonso "$target") non-.so"
 	nvstore_keyfiles "$target" | sed 's/^/  /'
-	[ -e /etc/ld.so.conf.d/ld.wsl.conf ] || {
-		printf '%s\n%s\n' "$WSL_LIB" "$WSL_DRIVERS" > /etc/ld.so.conf.d/ld.wsl.conf
-		note "wrote /etc/ld.so.conf.d/ld.wsl.conf"
-	}
-	ldconfig 2>/dev/null || true
+
+	# The loaders live in $WSL_LIB and only find the payload through ld.so; both
+	# directories have to be on the search path or the payload is never reached.
+	# Report a write failure instead of claiming the line was added.
+	if [ ! -e /etc/ld.so.conf.d/ld.wsl.conf ]; then
+		if mkdir -p /etc/ld.so.conf.d 2>/dev/null &&
+		   printf '%s\n%s\n' "$WSL_LIB" "$WSL_DRIVERS" > /etc/ld.so.conf.d/ld.wsl.conf 2>/dev/null; then
+			note "wrote /etc/ld.so.conf.d/ld.wsl.conf"
+		else
+			warn "cannot write /etc/ld.so.conf.d/ld.wsl.conf (needs root)"
+			note "  echo -e '$WSL_LIB\\n$WSL_DRIVERS' | sudo tee /etc/ld.so.conf.d/ld.wsl.conf && sudo ldconfig"
+		fi
+	else
+		local d added=0
+		for d in "$WSL_LIB" "$WSL_DRIVERS"; do
+			grep -qx "$d" /etc/ld.so.conf.d/ld.wsl.conf 2>/dev/null && continue
+			# the redirect must be silenced in a subshell: `cmd >> f 2>/dev/null`
+			# still prints the shell's own "Permission denied" for the redirect
+			if ( printf '%s\n' "$d" >> /etc/ld.so.conf.d/ld.wsl.conf ) 2>/dev/null; then
+				note "added $d to /etc/ld.so.conf.d/ld.wsl.conf"
+				added=1
+			else
+				warn "cannot append $d to /etc/ld.so.conf.d/ld.wsl.conf (needs root)"
+			fi
+		done
+		[ "$added" -eq 1 ] && have ldconfig && ldconfig 2>/dev/null || true
+	fi
+	have ldconfig && ldconfig 2>/dev/null || true
 
 	say "real consumer test (never nvidia-smi)"
+	if [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
+		mark_fail "cannot test cuInit: $WSL_LIB/libcuda.so.1 missing" \
+			"- the loaders are not deployed (they come from ExHyperV's lib/), the payload alone cannot run"
+		note "the DriverStore copy above is still correct; install the loaders, then re-run: $PROG verify"
+		return "$GPUPV_FAILS"
+	fi
 	local rc
 	timeout 60 python3 -c 'import ctypes,sys; sys.exit(0 if ctypes.CDLL("/usr/lib/wsl/lib/libcuda.so.1").cuInit(0)==0 else 1)'
 	rc=$?
@@ -169,7 +262,7 @@ cmd_ds_install() {
 		note "now run: $PROG verify"
 	else
 		mark_fail "cuInit" "rc=$rc (139 = SIGSEGV)"
-		note "not fixed by this payload. Roll back: sudo $PROG driverstore rollback"
+		note "payload is in place but CUDA still fails. Roll back: sudo $PROG driverstore rollback"
 		note "then: $PROG doctor   (module ABI + LD_DEBUG trace, in that order)"
 	fi
 	return "$GPUPV_FAILS"

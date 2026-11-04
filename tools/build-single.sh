@@ -12,7 +12,7 @@ set -eu
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
 OUT="$REPO/gpupv-fnos.sh"
-LIBS="common assets triage verify doctor module driverstore service serve"
+LIBS="common assets deps triage verify doctor module driverstore loaders service serve"
 
 tmp=$(mktemp)
 {

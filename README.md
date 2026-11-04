@@ -63,19 +63,47 @@ sudo ./gpupv-fnos.sh service install --selftest
 
 ```bash
 # one file, no repo checkout needed
-sudo ./gpupv-fnos.sh setup              # module + boot service, then verify
-sudo ./gpupv-fnos.sh setup /tmp/nvstore # ... and overlay the DriverStore from a directory
+sudo ./gpupv-fnos.sh setup              # toolchain + module + boot service, then verify
+sudo ./gpupv-fnos.sh setup /tmp/nvstore/nv_dispi.inf_amd64_<hash>
 ```
 
 `setup` is idempotent: it skips every step whose result already exists.
+
+**A stock fnOS has `make` but no `gcc`.** Without it kbuild only says
+`/bin/sh: 1: gcc: not found … Error 127`, which reads like a broken source tree. `setup` installs
+the toolchain as root; check or install it yourself up front:
+
+```bash
+./gpupv-fnos.sh deps            # gcc, xz, bc, bison, flex, libelf/libssl/zlib headers
+sudo ./gpupv-fnos.sh deps --install
+```
+
+### The two halves of the userland
+
+Both directories are required, and they fail differently:
+
+| path | content | comes from |
+|---|---|---|
+| `/usr/lib/wsl/lib` | thin loaders (`libcuda.so.1.1` ≈ 171 KB, `libnvidia-ml.so.1`, `libdxcore.so`) + `nvidia-smi` | ExHyperV's `lib/` folder |
+| `/usr/lib/wsl/drivers/nv_dispi.inf_amd64_<hash>/` | payload (`libcuda.so.1.1` ≈ 25 MB) + data files (`nvinfo.pb`) | the host's DriverStore |
+
+```bash
+./gpupv-fnos.sh loaders status                  # both halves + the ld.so search path
+sudo ./gpupv-fnos.sh loaders install <ExHyperV>/lib
+```
+
+Payload without loaders → `libcuda.so.1 missing`. Loaders without a complete payload → a working
+`nvidia-smi` and a crashing `cuInit`. `verify` scores them separately so the message names the right
+one.
 
 ---
 
 ## What the guest script does
 
 ```
+deps        the build toolchain (fnOS ships make without gcc); --install does the apt-get
 triage      root-free: module / /dev/dxg / VMBus channels / DriverStore / NVML / load path
-verify      5 gates: device → DriverStore shape → NVML → cuInit → NVENC/CUVID matrix
+verify      5 gates: device → userland (loaders + payload) → NVML → cuInit → NVENC/CUVID matrix
 probe       compiles dxg_probe.c: proves module → channel → host partition with no NVIDIA lib
 doctor      DriverStore counts, offline module ABI gates, LD_DEBUG payload trace, D-state probes
 report      writes a markdown evidence file (attach this to an issue)
@@ -132,9 +160,10 @@ If step 4 shows zero, no amount of library swapping can help — the fault is up
 
 ## Requirements
 
-Guest (Hyper-V gen-2 VM with a GPU partition): `bash`, `curl`, `gcc`, `make`, `xz`, `python3`;
-kernel headers at `/lib/modules/$(uname -r)/build`; root only for `module install`,
-`driverstore install/rollback` and `service install`.
+Guest (Hyper-V gen-2 VM with a GPU partition): `bash`, `curl`, `python3`; kernel headers at
+`/lib/modules/$(uname -r)/build`. `gcc`/`make`/`xz`/`bc`/`bison`/`flex` are installed by
+`deps --install` (or automatically by `setup`/`module build` when run as root). Root only for
+`module install`, `driverstore install/rollback`, `loaders install` and `service install`.
 
 Host: Windows 10 19045 / 11 / Server 2022+, Administrator PowerShell, OpenSSH client (for `Deploy`)
 or `curl.exe` (for `Push`).
@@ -187,6 +216,7 @@ gpupv-windows.ps1     Windows host: Check / Deploy(ssh) / Push(http) / FixMmio /
 gpupv-fnos.sh         the guest tool - ONE file, no repo checkout needed
 gpupv.sh              modular entrypoint (development; same code as gpupv-fnos.sh)
 lib/                  the parts gpupv-fnos.sh is generated from
+                      (deps = toolchain, loaders = /usr/lib/wsl/lib, driverstore = payload)
 src/                  dxg_probe.c, http_put_server.py, ldpreload_trace.c (embedded as base64)
 tests/                smoke suite + a Deploy end-to-end test with a fake ssh
 tools/                build-single.sh / build-assets.sh (regenerate gpupv-fnos.sh)
@@ -207,9 +237,9 @@ bash tests/smoke.sh --no-build # 39 checks, nothing mutated
 
 |       |                                                                                                                     |
 | ----- | ------------------------------------------------------------------------------------------------------------------- |
-| guest | fnOS 1.20.0505, kernel 6.18.18.c1032-trim, RTX 3060 Ti, driver 591.86 / CUDA 13.1                                 |
-| host  | Windows 10 Pro for Workstations /Windows 10 Pro 22H2 19045.7184                                                                     |
-| tests | `tests/smoke.sh --no-build` 39/39, `tests/e2e_deploy.sh` 10/10, both module branches compile and pass the ABI gates |
+| guest | Debian 12 / fnOS, kernel 6.18.18.c1032-trim, RTX 3060 Ti, driver 591.86 / CUDA 13.1                                 |
+| host  | Windows 10 Pro for Workstations 22H2 19045.7184                                                                     |
+| tests | `tests/smoke.sh --no-build` 46/46, `tests/e2e_deploy.sh` 13/13, both module branches compile and pass the ABI gates |
 
 [success report(ZHTW)](docs/success-report.md)
 

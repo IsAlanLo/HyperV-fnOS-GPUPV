@@ -105,11 +105,38 @@ sudo ./gpupv-fnos.sh service install --selftest           # 開機自動載入 +
 scp gpupv-fnos.sh youruser@192.168.x.x:/tmp/
 ssh youruser@192.168.x.x
 chmod +x /tmp/gpupv-fnos.sh
-sudo /tmp/gpupv-fnos.sh setup                 # 編譯模組（若缺）+ 開機服務 + 驗證
-sudo /tmp/gpupv-fnos.sh setup /tmp/nvstore    # 順便鋪 DriverStore
+sudo /tmp/gpupv-fnos.sh setup                 # 工具鏈 + 編譯模組（若缺）+ 開機服務 + 驗證
+sudo /tmp/gpupv-fnos.sh setup /tmp/nvstore/nv_dispi.inf_amd64_<hash>
 ```
 
 `setup` 是 idempotent：已經好的步驟會跳過，重跑安全。
+
+> **fnOS 預設沒有 `gcc`**（只有 `make`）。少了它 kbuild 只會說
+> `/bin/sh: 1: gcc: not found … Error 127`，看起來像原始碼壞了。`setup` 會自動用 root 安裝
+> 工具鏈；也可以先自己確認／安裝：
+>
+> ```bash
+> ./gpupv-fnos.sh deps              # gcc、xz、bc、bison、flex、libelf/libssl/zlib headers
+> sudo ./gpupv-fnos.sh deps --install
+> ```
+
+### userland 的兩半，缺一不可
+
+| 路徑                                                      | 內容                                                                  | 來源                   |
+| --------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------- |
+| `/usr/lib/wsl/lib`                                        | 載入器（`libcuda.so.1.1` 約 171 KB、`libnvidia-ml.so.1`、`libdxcore.so`）+ `nvidia-smi` | ExHyperV 的 `lib/`     |
+| `/usr/lib/wsl/drivers/nv_dispi.inf_amd64_<hash>/`         | 真正的 payload（`libcuda.so.1.1` 約 25 MB）+ 資料檔（`nvinfo.pb`）     | 主機的 DriverStore     |
+
+```bash
+./gpupv-fnos.sh loaders status                  # 兩半 + ld.so 搜尋路徑
+sudo ./gpupv-fnos.sh loaders install <ExHyperV>/lib
+```
+
+只有 payload 沒有載入器 → `libcuda.so.1 missing`；只有載入器而 payload 被裁剪 → `nvidia-smi`
+正常但 `cuInit` 崩。`verify` 會分開評分，訊息才指得出是哪一半。
+
+> 全新 guest 上什麼都還沒部署，資料夾名稱只能來自主機那一份，所以 `setup` 請傳**資料夾本身**
+> （`.../nv_dispi.inf_amd64_<hash>`），或加 `--name nv_dispi.inf_amd64_<hash>`。
 
 ---
 

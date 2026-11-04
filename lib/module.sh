@@ -106,6 +106,9 @@ cmd_module_build() {
 	done
 	have make || die "make not found"
 	have curl || die "curl not found"
+	# A stock fnOS has make but no gcc: fail here with the package list instead
+	# of inside kbuild as "/bin/sh: 1: gcc: not found / Error 127".
+	deps_ensure || exit 1
 	local k
 	k=$(kver)
 	[ -d "/lib/modules/$k/build" ] || die "no kernel build tree at /lib/modules/$k/build (install linux-headers-$k)"
@@ -169,6 +172,16 @@ EOF
 	else
 		mark_fail "compile failed" "see $log"
 		grep -E 'error|Error' "$log" | head -15 | sed 's/^/  /'
+		# The two failures that are not a code problem: a missing compiler and a
+		# missing tool. Name the fix instead of leaving Error 127 bare.
+		if grep -qE 'gcc: not found|cc1: not found|Error 127' "$log"; then
+			note ""
+			note "the compiler is missing, not the source:  sudo $PROG deps --install"
+		elif grep -qE 'objtool|resolve_btfids|make.*: .*No such file' "$log"; then
+			note ""
+			note "kbuild tool missing (objtool / resolve_btfids) - install the kernel toolchain:"
+			note "  sudo $PROG deps --install"
+		fi
 		return 1
 	fi
 	grep -E 'unreachable instruction|Skipping BTF' "$log" >/dev/null 2>&1 && \

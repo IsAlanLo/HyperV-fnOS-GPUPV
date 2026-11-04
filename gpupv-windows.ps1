@@ -77,6 +77,14 @@ param(
     # one gpupv-fnos.sh command line, for -Action Remote
     [string]$GuestCommand = 'verify',
 
+    # -Action Remote: run it through sudo (prompts once, visibly, on this console)
+    [switch]$AsRoot,
+
+    # Ask for the guest sudo password once (hidden) and feed it to 'sudo -S'
+    # instead of letting sudo prompt on the remote pty. Use this when the console
+    # cannot show a remote prompt, or when nobody is watching the window.
+    [switch]$SudoPrompt,
+
     # MMIO candidates
     [string]$HighMmio = '256GB',
     [string]$LowMmio = '3584MB',
@@ -178,9 +186,25 @@ function Get-SshTarget {
 }
 
 function Invoke-GuestSsh {
-    param([string[]]$Remote, [switch]$Tty, [switch]$Capture)
+    <#  -Tty streams to this console and lets sudo/scp ask for a password on it.
+        -Capture collects the output and returns an exit code.
+
+        They are MUTUALLY EXCLUSIVE, and not as a style preference: with -Capture
+        ssh's stdout is a pipe, so the remote pty's output - including sudo's
+        "password:" prompt - is buffered until ssh exits, and ssh waits for a
+        password nobody can see. The run hangs with no output at all. Ask for one
+        or the other; when a step needs both a prompt and its result, stream it
+        here and read the result back with a second, non-tty call. #>
+    param([string[]]$Remote, [switch]$Tty, [switch]$Capture, [int]$TimeoutSec = 0)
+    if ($Tty -and $Capture) {
+        throw 'Invoke-GuestSsh: -Tty and -Capture cannot be combined (the password prompt would be swallowed)'
+    }
     $ssh = Get-SshExe
-    $argv = @('-o','BatchMode=no','-o','StrictHostKeyChecking=accept-new','-p',$SshPort)
+    # ServerAlive options only reap a DEAD connection; they say nothing about a
+    # process that is merely slow, so a long step is bounded on the guest side.
+    $argv = @('-o','BatchMode=no','-o','StrictHostKeyChecking=accept-new',
+              '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=8',
+              '-p',$SshPort)
     if ($SshKey) { $argv += @('-i',$SshKey) }
     if ($Tty)    { $argv += '-t' }
     $argv += Get-SshTarget
@@ -198,6 +222,97 @@ function Invoke-GuestSsh {
     }
     & $ssh @argv
     if ($LASTEXITCODE -ne 0) { throw "ssh command failed (exit $LASTEXITCODE): $($Remote -join '; ')" }
+}
+
+function Invoke-GuestSshStream {
+    <#  Run a guest command with a tty, SHOWING its output live and saving it to
+        -LogPath at the same time. Returns the ssh exit code plus the captured
+        text.
+
+        This exists because -Tty and -Capture cannot be combined (see above): the
+        long step needs the tty for sudo's prompt, but its result still has to be
+        classified afterwards. Tee'ing to a file keeps the prompt visible on the
+        console AND leaves the text readable, without waiting for the process to
+        exit to see anything. #>
+    param([string[]]$Remote, [string]$LogPath, [int]$TimeoutSec = 0)
+    $ssh = Get-SshExe
+    $argv = @('-o','BatchMode=no','-o','StrictHostKeyChecking=accept-new',
+              '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=8',
+              '-p',$SshPort)
+    if ($SshKey) { $argv += @('-i',$SshKey) }
+    $argv += '-t'
+    $argv += Get-SshTarget
+    $argv += ($Remote -join '; ')
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $ssh @argv 2>&1 | ForEach-Object {
+            $s = "$_"
+            $lines.Add($s) | Out-Null
+            # Write-Host keeps the live stream (and the password prompt) on the
+            # console; the copy above is what gets classified.
+            Write-Host $s
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $old
+    }
+    $text = $lines -join "`n"
+    if ($LogPath) {
+        try { Set-Content -LiteralPath $LogPath -Value $text -Encoding UTF8 } catch { }
+    }
+    return [pscustomobject]@{ Output = $text; Code = $code }
+}
+
+function Invoke-GuestSshSudo {
+    <#  Run a command as root WITHOUT relying on a remote tty prompt: ask for the
+        sudo password here (Read-Host -AsSecureString, so it never echoes and
+        never lands in the command line or history), then feed it to `sudo -S`
+        over ssh's stdin.
+
+        No -t is passed on purpose: with a pty allocated sudo reads the terminal
+        instead of stdin, which is exactly the mode that hangs when the console
+        cannot present the prompt. The password exists only in this process's
+        memory and on the (already encrypted) ssh stream. #>
+    param([string]$Remote, [string]$LogPath, [switch]$AssumeYes)
+    $ssh = Get-SshExe
+    $sec = Read-Host -AsSecureString "sudo password for $(Get-SshTarget)"
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+
+    $argv = @('-o','BatchMode=no','-o','StrictHostKeyChecking=accept-new',
+              '-o','ServerAliveInterval=15','-o','ServerAliveCountMax=8',
+              '-p',$SshPort)
+    if ($SshKey) { $argv += @('-i',$SshKey) }
+    $argv += Get-SshTarget
+    # -p '' silences sudo's own prompt; -S makes it read stdin (the password line)
+    $argv += "sudo -S -p '' $Remote"
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # The first line is the password; it is consumed by sudo's -S read and
+        # never echoed back by the guest.
+        "$plain" | & $ssh @argv 2>&1 | ForEach-Object {
+            $s = "$_"
+            if ($s -match [regex]::Escape($plain)) { $s = '***' }
+            $lines.Add($s) | Out-Null
+            Write-Host $s
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $old
+    }
+    $text = $lines -join "`n"
+    if ($LogPath) { try { Set-Content -LiteralPath $LogPath -Value $text -Encoding UTF8 } catch { } }
+    return [pscustomobject]@{ Output = $text; Code = $code }
 }
 
 function Send-GuestFile {
@@ -343,7 +458,7 @@ switch ($Action) {
         #    able to tell that nothing else was attempted. The same probe checks the
         #    guest's build prerequisites, because a stock fnOS has `make` but no
         #    `gcc` - and finding that out after a 2.5 GB upload wastes the upload.
-        Write-Host '  [1/5] ssh + guest prerequisites'
+        Write-Host '  [1/6] ssh + guest prerequisites'
         $probe = 'echo GPUPV_ALIVE; uname -r; id -un; ' +
                  'for b in gcc make xz depmod; do command -v $b >/dev/null 2>&1 || printf "MISSING %s\n" $b; done; ' +
                  '[ -d /lib/modules/$(uname -r)/build ] || echo "MISSING headers"'
@@ -370,7 +485,7 @@ switch ($Action) {
         }
 
         # 2. the guest script
-        Write-Host '  [2/5] upload ' -NoNewline
+        Write-Host '  [2/6] upload ' -NoNewline
         $localScript = Join-Path $RepoRoot $GuestScript
         if (-not (Test-Path $localScript)) { throw "$GuestScript not found next to this script" }
         Invoke-GuestSsh -Remote @("mkdir -p $RemoteDir") | Out-Null
@@ -387,52 +502,94 @@ switch ($Action) {
         #    install then has nothing to name the destination with.
         $dsLeaf = Split-Path -Leaf $ds.Path
         if ($SkipDriverStore) {
-            Write-Host '  [3/5] DriverStore skipped (-SkipDriverStore)'
+            Write-Host '  [3/6] DriverStore skipped (-SkipDriverStore)'
         } else {
-            Write-Host '  [3/5] packing the DriverStore'
+            Write-Host '  [3/6] packing the DriverStore'
             $tar = Join-Path $env:TEMP 'gpupv-driverstore.tar'
             if (Test-Path $tar) { Remove-Item $tar -Force }
             & tar.exe -cf $tar -C (Split-Path -Parent $ds.Path) $dsLeaf
             if ($LASTEXITCODE -ne 0) { throw "tar failed (exit $LASTEXITCODE)" }
             $sizeMB = [math]::Round((Get-Item $tar).Length / 1MB, 1)
             Write-Item 'archive' "$tar ($sizeMB MB)"
-            Write-Host '  [4/5] uploading (this is the slow part - 2.5 GB of driver payload)'
+            Write-Host '  [4/6] uploading (this is the slow part - 2.5 GB of driver payload)'
             Send-GuestFile -Local $tar -RemotePath "$RemoteDir/nvstore.tar"
             Write-Good 'archive uploaded'
             Remove-Item $tar -Force -ErrorAction SilentlyContinue
         }
 
-        # 4. unpack + setup, in the guest. ONE sudo prompt for the whole run:
-        #    'sudo -v' refreshes the timestamp, then 'sudo -n' uses it. Letting each
-        #    step prompt on its own is what produced "Sorry, try again" loops when
-        #    several prompts raced in one tty.
-        Write-Host '  [5/5] installing in the guest (sudo will prompt once)'
-        $storeArg = if ($SkipDriverStore) { '' } else { " $RemoteDir/nvstore/$dsLeaf" }
-        $cmds = @(
+        # 4. unpack first, WITHOUT a tty: no root is needed, so its output is
+        #    collected and read directly.
+        Write-Host '  [5/6] unpacking in the guest'
+        $u = Invoke-GuestSsh -Capture -Remote @(
             "chmod +x $RemoteDir/$GuestScript"
             "rm -rf $RemoteDir/nvstore && mkdir -p $RemoteDir/nvstore"
-            "tar -xf $RemoteDir/nvstore.tar -C $RemoteDir/nvstore 2>/dev/null || true"
-            ('if [ -d "' + $RemoteDir + '/nvstore/' + $dsLeaf + '" ]; then echo "unpacked: $(ls ' + $RemoteDir + '/nvstore/' + $dsLeaf + ' | wc -l) files into nvstore/' + $dsLeaf + '"; else echo "unpacked flat - the archive had no folder root, falling back"; fi')
-            "sudo -v"
-            "sudo -n $RemoteDir/$GuestScript setup$storeArg"
+            "tar -xf $RemoteDir/nvstore.tar -C $RemoteDir/nvstore"
+            "ls -d $RemoteDir/nvstore/nv_dispi.inf_amd64_* 2>/dev/null | head -1"
+            "ls $RemoteDir/nvstore/*/ 2>/dev/null | wc -l || ls $RemoteDir/nvstore | wc -l"
         )
-        # 'setup' ends with the gates and their exit code comes back through ssh,
-        # so a failed install is not reported as a success here.
-        $v = Invoke-GuestSsh -Remote $cmds -Tty -Capture
-        Write-Host $v.Output
+        $u.Output -split "`n" | Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host "    $_" }
+        if ($u.Code -ne 0) { throw "unpack failed in the guest (exit $($u.Code)) - see the lines above" }
+
+        # Resolve the unpacked payload from what the guest printed, not from an
+        # assumption: the folder root is what DXCore will ask for by name.
+        $lines = @($u.Output -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $guestStore = $lines | Where-Object { $_ -match '/nvstore/nv_dispi\.inf_amd64_' } | Select-Object -First 1
+        if (-not $guestStore) { $guestStore = "$RemoteDir/nvstore" }
+        Write-Item 'payload' $guestStore
+        $storeArg = if ($SkipDriverStore) { '' } else { " $guestStore" }
+
+        # 5. one privileged step, streamed live on this console.
+        #
+        #    Streaming, not capturing: with -Capture the pty's output (including
+        #    sudo's "password:" prompt) is buffered until ssh exits, and ssh waits
+        #    for a password nobody can see - the run then hangs with no output.
+        #    sudo -v refreshes the timestamp once, so setup itself needs no prompt.
+        Write-Host '  [6/6] running setup'
+        $log = Join-Path $env:TEMP 'gpupv-deploy-guest.log'
+        Write-Host "    (full guest output is also saved to $log)" -ForegroundColor DarkGray
+        if ($SudoPrompt) {
+            # Password is asked here, hidden, and piped to 'sudo -S' on the guest:
+            # no remote pty prompt is involved, so nothing can hang waiting for a
+            # prompt the console never shows.
+            Write-Host '    (you will be asked for the guest sudo password once)' -ForegroundColor DarkGray
+            $v = Invoke-GuestSshSudo -Remote "$RemoteDir/$GuestScript setup$storeArg" -LogPath $log
+        } else {
+            # Default: stream the run on this console. sudo prompts on the remote
+            # tty, which works whenever this window is interactive - and 'sudo -v'
+            # keeps it to a single prompt for the whole run.
+            $v = Invoke-GuestSshStream -Remote @("sudo -v && sudo -n $RemoteDir/$GuestScript setup$storeArg") -LogPath $log
+        }
+
         if ($v.Code -eq 0 -and $v.Output -match 'gates: \d+ checks, 0 failed') {
             Write-Good 'guest verified: CUDA + codecs work'
+        } elseif ($v.Output -match 'Password:|try again') {
+            Write-Bad 'the guest never accepted the sudo password, so nothing was installed'
+            Write-Host "  re-run just the install (it will prompt once, visibly):" -ForegroundColor Cyan
+            Write-Host "    .\gpupv-windows.ps1 -Action Remote -GuestHost $GuestHost -GuestUser $GuestUser -AsRoot -GuestCommand `"setup$storeArg`""
         } else {
-            Write-Bad "guest setup did not finish cleanly (ssh exit $($v.Code)) - read the output above"
+            Write-Bad "guest setup did not finish cleanly (ssh exit $($v.Code)) - full log: $log"
             Write-Host "  deeper: " -NoNewline
             Write-Host ("  .\gpupv-windows.ps1 -Action Remote -GuestHost $GuestHost -GuestCommand doctor") -ForegroundColor Cyan
         }
     }
 
     'Remote' {
+        <#  Stream to this console, never capture: a sudo password prompt has to
+            be visible. -AsRoot refreshes the sudo timestamp once and then runs the
+            command with -n, so exactly one prompt appears. #>
         $target = Get-SshTarget
-        $cmds = @("$RemoteDir/$GuestScript $GuestCommand")
-        Invoke-GuestSsh -Remote $cmds -Tty
+        $line = "$RemoteDir/$GuestScript $GuestCommand"
+        Write-Head "Remote: $target"
+        Write-Host "  $line" -ForegroundColor DarkGray
+        $log = Join-Path $env:TEMP 'gpupv-remote.log'
+        if ($SudoPrompt) {
+            $v = Invoke-GuestSshSudo -Remote $line -LogPath $log
+        } else {
+            if ($AsRoot -and $line -notmatch '^\s*sudo') { $line = "sudo -v && sudo -n $line" }
+            $v = Invoke-GuestSshStream -Remote @($line) -LogPath $log
+        }
+        if ($v.Code -ne 0) { Write-Bad "remote command exited $($v.Code) (log: $log)" }
+        exit $v.Code
     }
 
     'Push' {

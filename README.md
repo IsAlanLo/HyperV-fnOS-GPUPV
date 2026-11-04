@@ -36,9 +36,19 @@ refuses to call anything working off `nvidia-smi`.
 .\gpupv-windows.ps1 -Action Deploy -VMName fnos -GuestHost 192.168.x.x -GuestUser youruser
 ```
 
-`Deploy` prints six numbered steps: ssh reachability → upload the script → pack the DriverStore →
-upload the archive → install in the guest (sudo prompts appear in this console) → run the gates and
-repeat their output here. Nothing is hidden behind a spinner.
+`Deploy` prints six numbered steps: ssh reachability **+ guest toolchain check** → upload the script
+→ pack the DriverStore → upload the archive → unpack in the guest → run `setup` with its output
+streamed to this console. Nothing is hidden behind a spinner.
+
+The sudo prompt matters more than it looks: a remote pty whose output is being *captured* buffers
+sudo's `password:` line until the command exits, and the command waits for a password you never see.
+`Deploy` therefore streams the privileged step and never captures it. If you would rather not have a
+remote prompt at all (unattended run, or a console that drops the prompt), use the hidden local
+prompt instead:
+
+```powershell
+.\gpupv-windows.ps1 -Action Deploy ... -SudoPrompt   # password asked here, piped to 'sudo -S'
+```
 
 Host requirements: Administrator PowerShell, the guest's OpenSSH server enabled, `tar.exe` (bundled
 with Windows 10 1803+).
@@ -150,7 +160,7 @@ If step 4 shows zero, no amount of library swapping can help — the fault is up
 | `Check`           | no            | VM settings, partition, partitionable GPU pool, host driver, policy, hypervisor scheduler, DriverStore           |
 | `ShowDriverStore` | no            | resolves the `nv_dispi.inf_amd64_<hash>` folder without hard-coding the hash; counts files; flags incompleteness |
 | `Deploy`          | guest yes     | ssh → script + tar → install + service → verify, all in one                                                      |
-| `Remote`          | –             | run one guest command over ssh (default `verify`)                                                                |
+| `Remote`          | –             | run one guest command over ssh (default `verify`); `-AsRoot` for sudo, `-SudoPrompt` for a hidden local prompt   |
 | `Push`            | guest yes     | HTTP PUT of the full DriverStore to a running receiver                                                           |
 | `FixMmio`         | host yes      | stop VM → `GuestControlledCacheTypes` + MMIO gaps (does **not** start it)                                        |
 | `AddPartition`    | host yes      | stop VM → remove + re-add the GPU partition (does **not** start it)                                              |

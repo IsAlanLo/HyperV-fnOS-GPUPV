@@ -13,6 +13,15 @@
 
 guest 沒有 sshd 也可以：兩邊都支援純 HTTP 傳輸（`-Action Push` ↔ `gpupv-fnos.sh receive`）。
 
+> **sudo 密碼不能「一邊抓輸出、一邊等輸入」。** 如果 ssh 的輸出被接管（例如 `-Capture`），
+> 遠端 pty 的內容（含 `password:` 提示）會等到程序結束才一次吐出來，於是程式在等一個你根本
+> 看不到的密碼 → 整個卡住。工具因此**只串流、不接管**那一步。
+> 想完全不出現遠端提示，改用本機隱藏輸入：
+>
+> ```powershell
+> .\gpupv-windows.ps1 -Action Deploy ... -SudoPrompt
+> ```
+
 ---
 
 ## 一、先判斷壞在哪一層

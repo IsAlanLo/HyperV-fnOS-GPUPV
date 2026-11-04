@@ -66,6 +66,24 @@ if printf '%s' "$line" | grep -q 'strip-components'; then
 else ok "Deploy one-liner preserves the nv_dispi folder name"; fi
 if [ "$(printf '%s\n' "$line" | wc -l)" -le 2 ]; then ok "Deploy one-liner is a single pasteable line"; else bad "one-liner is multi-line"; fi
 
+echo "== Invoke-GuestSsh refuses -Tty with -Capture"
+# A pty whose output is captured buffers sudo's prompt until exit, and the run then
+# waits forever for a password nobody can see. The guard must be structural.
+guard=$(pwsh -NoProfile -Command '
+  $ErrorActionPreference = "Stop"
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "gpupv-windows.ps1"), [ref]$null, [ref]$null)
+  $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Invoke-GuestSsh" }, $true)[0]
+  if ($fn.Extent.Text -match "-Tty\s+-and\s+\$Capture") { "GUARD" } else { "NOGUARD" }
+  ' 2>&1)
+printf '%s' "$guard" | grep -q GUARD && ok "Invoke-GuestSsh has an explicit -Tty/-Capture guard" \
+	|| bad "-Tty/-Capture guard" "$guard"
+grep -q 'Invoke-GuestSsh -Tty -Capture' gpupv-windows.ps1 && bad "a call site still combines -Tty with -Capture" \
+	|| ok "no call site combines -Tty with -Capture"
+grep -q 'Invoke-GuestSshStream' gpupv-windows.ps1 && ok "the privileged step streams (Invoke-GuestSshStream)" \
+	|| bad "no streaming helper for the privileged step"
+grep -q 'Read-Host -AsSecureString' gpupv-windows.ps1 && ok "-SudoPrompt asks locally with a hidden prompt" \
+	|| bad "no hidden local sudo prompt"
+
 echo "== ssh reachability + guest prerequisites (fake ssh, local exec)"
 ssh -o BatchMode=no -p 22 alan@10.9.9.9 'echo GPUPV_ALIVE; uname -r; id -un; for b in gcc make xz depmod; do command -v $b >/dev/null 2>&1 || printf "MISSING %s\n" $b; done' > "$SB/reach.txt" 2>&1
 grep -q GPUPV_ALIVE "$SB/reach.txt" && ok "reachability probe reports GPUPV_ALIVE" || bad "reachability" "$(cat "$SB/reach.txt")"

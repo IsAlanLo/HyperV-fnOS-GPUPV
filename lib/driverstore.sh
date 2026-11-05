@@ -250,7 +250,7 @@ cmd_ds_install() {
 	say "real consumer test (never nvidia-smi)"
 	if [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
 		mark_fail "cannot test cuInit: $WSL_LIB/libcuda.so.1 missing" \
-			"- the loaders are not deployed (they come from ExHyperV's lib/), the payload alone cannot run"
+			"- the loaders are not deployed (they come from the host's C:\\Windows\\System32\\lxss\\lib), so the payload alone cannot run"
 		note "the DriverStore copy above is still correct; install the loaders, then re-run: $PROG verify"
 		return "$GPUPV_FAILS"
 	fi

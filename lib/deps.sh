@@ -36,11 +36,24 @@ _deps_bin_pkg() {
 	esac
 }
 
+# A binary is present if it is on PATH OR at a standard root-only location: a
+# non-root login shell on fnOS can have /usr/sbin and /sbin stripped from PATH, so
+# `command -v depmod` reported "missing" for an installed kmod. Check the paths a
+# root build will actually use.
+_deps_have() {
+	local p
+	have "$1" && return 0
+	for p in "/usr/sbin/$1" "/sbin/$1" "/usr/bin/$1" "/bin/$1" "/usr/local/bin/$1"; do
+		[ -x "$p" ] && return 0
+	done
+	return 1
+}
+
 # What is missing, one binary per line. Header files are checked separately.
 _deps_missing_bins() {
 	local b
 	for b in gcc make xz bc bison flex depmod; do
-		have "$b" || echo "$b"
+		_deps_have "$b" || echo "$b"
 	done
 }
 
@@ -79,17 +92,30 @@ cmd_deps() {
 		return 0
 	fi
 
-	[ -n "$missing" ] && mark_fail "missing binaries:$missing" "- these are what break the build with Error 127"
-	[ -n "$pkgs" ] && mark_fail "missing headers:$pkgs" "- objtool / compression / module signing"
-
+	# When this command is about to install them, a missing package is a TODO,
+	# not a failed check: counting it as a gate failure made a successful run
+	# report "gates: 15 checks, 4 failed" over packages it had just installed.
 	if [ "$do_install" -eq 0 ]; then
+		[ -n "$missing" ] && mark_fail "missing binaries:$missing" "- these are what break the build with Error 127"
+		[ -n "$pkgs" ] && mark_fail "missing headers:$pkgs" "- objtool / compression / module signing"
 		note ""
 		note "install with:  sudo $PROG deps --install"
 		return 1
 	fi
+	[ -n "$missing" ] && sub "missing binaries:$missing"
+	[ -n "$pkgs" ] && sub "missing headers:$pkgs"
 
 	need_root deps --install
-	have apt-get || die "no apt-get; install manually:$pkgs $(_deps_bin_pkg_list "$missing")"
+	# Only apt is implemented. On another distribution the answer is not a failed
+	# install but "here is the equivalent command", so the tool stays usable.
+	if ! have apt-get; then
+		mark_fail "no apt-get on this system" "- install the toolchain with your package manager"
+		note "  Debian/Ubuntu: apt-get install -y $pkgs"
+		note "  Fedora/RHEL:   dnf install -y $pkgs"
+		note "  Arch:          pacman -S --needed $pkgs"
+		note "then re-run:  $PROG deps"
+		return 1
+	fi
 
 	# Map binaries to packages, dedupe, and keep the fixed list order.
 	for b in $missing; do

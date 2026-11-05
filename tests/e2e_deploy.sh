@@ -84,6 +84,45 @@ grep -q 'Invoke-GuestSshStream' gpupv-windows.ps1 && ok "the privileged step str
 grep -q 'Read-Host -AsSecureString' gpupv-windows.ps1 && ok "-SudoPrompt asks locally with a hidden prompt" \
 	|| bad "no hidden local sudo prompt"
 
+echo "== the privileged step keeps a pty and avoids pipes"
+line=$(pwsh -NoProfile -File tests/deploy_cmds.ps1 2>&1)
+printf '%s' "$line" | grep -q 'script -q -e -c' && ok "guest step runs under script -q -e (pty, exit status kept)" \
+	|| bad "privileged step has no pty wrapper" "$line"
+printf '%s' "$line" | grep -q 'tee' && bad "privileged step pipes through tee (would buffer the prompt)" \
+	|| ok "no tee/pipe in the privileged step"
+printf '%s' "$line" | grep -q 'sudo -v' && bad "still uses sudo -v then sudo -n (two prompts)" \
+	|| ok "one sudo invocation for the whole privileged step"
+
+echo "== the GPU partition is handled by the script, not left to the user"
+grep -q 'function Repair-GpuPartition' gpupv-windows.ps1 && ok "Repair-GpuPartition helper exists" \
+	|| bad "no shared partition repair helper"
+grep -q '\$FixPartition' gpupv-windows.ps1 && ok "Deploy can assign a partition (-FixPartition)" \
+	|| bad "Deploy cannot assign a partition"
+[ "$(grep -c 'Add-VMGpuPartitionAdapter' gpupv-windows.ps1)" -le 2 ] && ok "partition assignment exists in ONE place" \
+	|| bad "partition assignment duplicated" "- copies drift apart"
+grep -q 'lxss' gpupv-windows.ps1 && ok "loaders resolved from the OS (lxss\\lib), not a third-party package" \
+	|| bad "loaders still tied to a third-party package"
+grep -qi 'ExHyperV' gpupv-windows.ps1 && bad "ExHyperV still referenced in the host script" \
+	|| ok "no ExHyperV reference left in the host script"
+
+echo "== the script is generic, not tuned to one machine"
+grep -q 'function Get-VMName' gpupv-windows.ps1 && ok "VM name is resolved (single VM implied)" \
+	|| bad "VM name must be typed by hand"
+grep -q "\[string\]\$VMName = ''" gpupv-windows.ps1 && ok "-VMName has no machine-specific default" \
+	|| bad "-VMName still defaults to one machine's VM name"
+grep -q 'function Get-GuestAddress' gpupv-windows.ps1 && ok "guest address can be discovered from Hyper-V" \
+	|| bad "guest address must be typed by hand"
+grep -q 'VMNetworkAdapter' gpupv-windows.ps1 && ok "discovery uses Get-VMNetworkAdapter" \
+	|| bad "address discovery not implemented"
+grep -q "ValidateSet('Auto'" gpupv-windows.ps1 && ok "-Action Auto is the one-command path" \
+	|| bad "no Auto action"
+grep -q "GPUPV_VERSION = " gpupv-windows.ps1 && ok "the script reports its own version (stale-copy detection)" \
+	|| bad "no version stamp"
+pwsh -NoProfile -File gpupv-windows.ps1 -Action Version 2>&1 | grep -q '^gpupv-windows.ps1 [0-9]' \
+	&& ok "-Action Version prints a version" || bad "-Action Version output"
+grep -q 'dnf install\|pacman -S' lib/deps.sh && ok "non-apt systems get an equivalent command" \
+	|| bad "deps only works on apt systems"
+
 echo "== ssh reachability + guest prerequisites (fake ssh, local exec)"
 ssh -o BatchMode=no -p 22 alan@10.9.9.9 'echo GPUPV_ALIVE; uname -r; id -un; for b in gcc make xz depmod; do command -v $b >/dev/null 2>&1 || printf "MISSING %s\n" $b; done' > "$SB/reach.txt" 2>&1
 grep -q GPUPV_ALIVE "$SB/reach.txt" && ok "reachability probe reports GPUPV_ALIVE" || bad "reachability" "$(cat "$SB/reach.txt")"

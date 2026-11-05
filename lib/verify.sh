@@ -105,20 +105,69 @@ _codec_matrix() {
 cmd_verify() {
 	local quick=0 ff smi out rc
 	[ "${1:-}" = "--quick" ] && quick=1
+	# verify is its own phase: earlier sub-commands in a 'setup' run must not
+	# leak their (already resolved) failures into this summary.
+	checks_reset
 
 	say "gate 1/5: module and device node"
 	if lsmod 2>/dev/null | grep -q '^dxgkrnl'; then mark_ok "dxgkrnl loaded"; else mark_fail "dxgkrnl loaded"; fi
 	if [ -e /dev/dxg ]; then mark_ok "/dev/dxg present"; else mark_fail "/dev/dxg present"; fi
-	local boundary=0
-	for d in /sys/bus/vmbus/devices/*/; do
-		[ -d "$d" ] || continue
-		case "$(cat "$d/class_id" 2>/dev/null)" in
-			*6e382d18*|*dde9cbc0*)
-				boundary=$((boundary + 1))
-				[ -e "$d/driver" ] || mark_fail "dxg channel $(basename "$d") has no driver bound";;
-		esac
+
+	# The channel directory is the decisive host-vs-guest signal, but VMBus
+	# enumeration lags a modprobe by a moment, and a guest may not expose the bus at
+	# all. Distinguish "counted zero" from "could not look": a bare "found 0" right
+	# after /dev/dxg appeared was reported as a host fault when the module had just
+	# created the device node.
+	local boundary=0 tries=0 vmbus_ok=0
+	[ -d /sys/bus/vmbus/devices ] && vmbus_ok=1
+	while [ "$tries" -lt 5 ]; do
+		boundary=0
+		for d in /sys/bus/vmbus/devices/*/; do
+			[ -d "$d" ] || continue
+			case "$(cat "$d/class_id" 2>/dev/null)" in
+				*6e382d18*|*dde9cbc0*)
+					boundary=$((boundary + 1))
+					[ -e "$d/driver" ] || mark_fail "dxg channel $(basename "$d") has no driver bound" ;;
+			esac
+		done
+		[ "$boundary" -ge 2 ] && break
+		tries=$((tries + 1))
+		[ "$tries" -lt 5 ] && sleep 1
 	done
-	[ "$boundary" -ge 2 ] && mark_ok "both dxg VMBus channels bound" || mark_fail "dxg VMBus channels" "found $boundary"
+
+	if [ "$boundary" -ge 2 ]; then
+		mark_ok "both dxg VMBus channels bound"
+	elif [ "$vmbus_ok" -eq 0 ]; then
+		# No bus to read. /dev/dxg existing means the driver did bind something, so
+		# this is unproven rather than broken - say which, do not invent a verdict.
+		if [ -e /dev/dxg ]; then
+			warn "cannot count dxg VMBus channels: /sys/bus/vmbus/devices is absent"
+			note "  /dev/dxg exists, so the driver bound something; check on the host side instead"
+		else
+			mark_fail "no /sys/bus/vmbus/devices" "- not a Hyper-V guest, or the module never started an adapter"
+		fi
+	elif [ -e /dev/dxg ]; then
+		# /dev/dxg is created by module init, so its existence says nothing about an
+		# adapter: 0 channels with the node present means the host never offered a
+		# GPU partition for THIS VM. Say that, and let the probe confirm it.
+		mark_fail "dxg VMBus channels (0)" "- host side: no GPU partition offered to this VM"
+		note "  /dev/dxg exists because dxgkrnl creates it at load, not because an adapter started"
+		note "  on the host:  .\gpupv-windows.ps1 -Action Check -VMName <name>   then -Action AddPartition"
+		note "  the guest side is otherwise complete; this is not a guest fault"
+	else
+		mark_fail "dxg VMBus channels" "found $boundary"
+		# Show what IS on the bus: a class_id that is not one of the two dxg GUIDs
+		# means the host offered something else (or nothing), which is a host-side
+		# answer rather than a guess.
+		local c n=0
+		while IFS= read -r d; do
+			[ -d "$d" ] || continue
+			c=$(cat "$d/class_id" 2>/dev/null)
+			n=$((n + 1))
+			[ "$n" -le 6 ] && note "  bus device $(basename "$d") class=$c"
+		done < <(ls -d /sys/bus/vmbus/devices/*/ 2>/dev/null)
+		[ "$n" -gt 0 ] && note "  ($n bus devices total; neither dxg GUID present)"
+	fi
 	if [ "$GPUPV_FAILS" -gt 0 ]; then
 		note "kernel path is not up; later gates cannot pass. Run: $PROG triage"
 		summary "gates"; return $?
@@ -134,7 +183,7 @@ cmd_verify() {
 	if [ "$lc" -eq 3 ]; then
 		mark_ok "loaders present in $WSL_LIB"
 	else
-		mark_fail "loaders missing in $WSL_LIB ($lc/3)" "- deploy ExHyperV's lib/: sudo $PROG loaders install <lib dir>"
+		mark_fail "loaders missing in $WSL_LIB ($lc/3)" "- copy the host's lxss/lib: sudo $PROG loaders install <dir>"
 	fi
 
 	local ds

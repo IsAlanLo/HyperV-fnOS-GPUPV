@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# lib/loaders.sh - deploy ExHyperV's `lib/` folder: the thin loaders in
-# /usr/lib/wsl/lib that turn the DriverStore payload into something applications
-# can call.
+# lib/loaders.sh - deploy the thin loaders in /usr/lib/wsl/lib that turn the
+# DriverStore payload into something applications can call.
+#
+# The source directory is C:\Windows\System32\lxss\lib on the host: it ships with
+# Windows itself and is refreshed by the NVIDIA driver. No third-party package is
+# required - ExHyperV's lib/ folder is just a copy of that directory.
 #
 # Two directories, two jobs (both are required; neither alone is enough):
 #   /usr/lib/wsl/lib          loaders      libcuda.so.1.1 ~171 KB, libnvidia-ml.so.1 ~267 KB,
@@ -20,7 +23,8 @@ cmd_loaders_status() {
 	say "loaders ($WSL_LIB)"
 	if [ ! -d "$WSL_LIB" ]; then
 		mark_fail "$WSL_LIB missing" "- nothing to load the payload with"
-		note "deploy ExHyperV's lib/ folder:  sudo $PROG loaders install <path/to/lib>"
+		note "copy the host's C:\\Windows\\System32\\lxss\\lib into the guest:"
+		note "  sudo $PROG loaders install <path/to/lxss/lib>"
 		return "$GPUPV_FAILS"
 	fi
 	local f n=0
@@ -48,7 +52,7 @@ cmd_loaders_status() {
 
 cmd_loaders_install() {
 	local src=${1:-}
-	[ -n "$src" ] || die "usage: sudo $PROG loaders install <path/to/ExHyperV/lib> [--driverstore DIR]"
+	[ -n "$src" ] || die "usage: sudo $PROG loaders install <path/to/lxss/lib> [--driverstore DIR]"
 	shift || true
 	local dstdrv=""
 	while [ $# -gt 0 ]; do
@@ -84,7 +88,8 @@ cmd_loaders_install() {
 	cp -a "$src/." "$WSL_LIB/" || die "copy failed"
 	chmod -R a+r "$WSL_LIB" 2>/dev/null || true
 
-	# The tooling (and ExHyperV's own script) expects these two links to exist.
+	# Two links the tooling expects: the mixed-case D3D12 name, and libcuda in the
+	# multiarch directory so a plain `-lcuda` finds the loader.
 	[ -e "$WSL_LIB/libd3d12core.so" ] && ln -sf "$WSL_LIB/libd3d12core.so" "$WSL_LIB/libD3D12Core.so" 2>/dev/null || true
 	if [ -e "$WSL_LIB/libcuda.so.1" ]; then
 		mkdir -p /usr/lib/x86_64-linux-gnu

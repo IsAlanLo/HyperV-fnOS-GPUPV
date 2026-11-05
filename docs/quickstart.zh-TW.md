@@ -7,6 +7,15 @@
 | `gpupv-windows.ps1` | Windows 主機（**系統管理員 PowerShell**） | 主機檢查、GPU 分區 / MMIO、透過 **SSH** 把 guest 整套裝好            |
 | `gpupv-fnos.sh`     | Linux guest（fnOS / Debian / Ubuntu…）    | guest 端工具：triage、verify、編譯 dxgkrnl、鋪 DriverStore、開機服務 |
 
+最短路徑是一行：
+
+```powershell
+.\gpupv-windows.ps1 -Action Auto -GuestUser <guest 帳號>
+```
+
+`Auto` 會自動偵測 VM、自動取得 guest IP、缺 GPU 分區就自己分配（含 MMIO 與冷啟動），
+然後上傳、安裝、驗證。
+
 `gpupv-windows.ps1 -Action Deploy` 會：SSH 進去 → 上傳 guest 腳本 → 把主機的
 `nv_dispi.inf_amd64_<hash>` 整個資料夾打包成 tar → 上傳 → 在 guest 裡執行 `setup`
 （缺模組才編譯、鋪 DriverStore、裝開機服務）→ 把 gate 結果印回 Windows 這邊。
@@ -62,9 +71,12 @@ SIGSEGV（本案固定崩在 `libcuda+0x516f71` / `si_addr 0x296c`）。
 修法（Windows 上）：
 
 ```powershell
-.\gpupv-windows.ps1 -Action ShowDriverStore     # 確認 files≈153、nvinfo.pb 存在
-.\gpupv-windows.ps1 -Action Deploy -VMName fnos -GuestHost 192.168.x.x -GuestUser youruser
+.\gpupv-windows.ps1 -Action ShowDriverStore     # 確認 files≈150、nvinfo.pb 存在
+.\gpupv-windows.ps1 -Action Deploy -VMName fnos -GuestHost 192.168.x.x -GuestUser youruser -FixPartition
 ```
+
+`-FixPartition`：VM 沒有 GPU 分區時，Deploy 會自己關機 → 分配分區與 MMIO → 冷啟動 →
+等 SSH 回來 → 繼續安裝。不加這個旗標則會在上傳前停下並告訴你要跑哪一行指令。
 
 沒有 SSH 時：
 
@@ -133,12 +145,12 @@ sudo /tmp/gpupv-fnos.sh setup /tmp/nvstore/nv_dispi.inf_amd64_<hash>
 
 | 路徑                                                      | 內容                                                                  | 來源                   |
 | --------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------- |
-| `/usr/lib/wsl/lib`                                        | 載入器（`libcuda.so.1.1` 約 171 KB、`libnvidia-ml.so.1`、`libdxcore.so`）+ `nvidia-smi` | ExHyperV 的 `lib/`     |
+| `/usr/lib/wsl/lib`                                        | 載入器（`libcuda.so.1.1` 約 171 KB、`libnvidia-ml.so.1`、`libdxcore.so`）+ `nvidia-smi` | `C:\Windows\System32\lxss\lib` |
 | `/usr/lib/wsl/drivers/nv_dispi.inf_amd64_<hash>/`         | 真正的 payload（`libcuda.so.1.1` 約 25 MB）+ 資料檔（`nvinfo.pb`）     | 主機的 DriverStore     |
 
 ```bash
 ./gpupv-fnos.sh loaders status                  # 兩半 + ld.so 搜尋路徑
-sudo ./gpupv-fnos.sh loaders install <ExHyperV>/lib
+sudo ./gpupv-fnos.sh loaders install <從 C:\Windows\System32\lxss\lib 複製過來的目錄>
 ```
 
 只有 payload 沒有載入器 → `libcuda.so.1 missing`；只有載入器而 payload 被裁剪 → `nvidia-smi`

@@ -60,7 +60,7 @@ usage: sudo ./gpupv-fnos.sh <command> [options]
   driverstore rollback [--driverstore DIR]
 
   loaders status             /usr/lib/wsl/lib: the thin loaders + nvidia-smi + ld.so path
-  loaders install LIBDIR     deploy ExHyperV's lib/ folder (the other half of the stack)
+  loaders install LIBDIR     deploy the thin loaders (host: C:\Windows\System32\lxss\lib)
   loaders rollback
 
   receive [DIR] [PORT]       HTTP PUT receiver for the host's DriverStore (default
@@ -113,13 +113,13 @@ cmd_setup() {
 		die "cannot continue without a compiler - install the toolchain, then re-run setup"
 	fi
 
-	# 2. loaders (ExHyperV's lib/) - the payload alone cannot be loaded
+	# 2. loaders (host C:\Windows\System32\lxss\lib) - the payload alone cannot load
 	if [ -n "$libdir" ]; then
 		sub "loaders from $libdir"
 		cmd_loaders_install "$libdir" || warn "loaders install reported a problem"
 	elif [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
 		warn "no loaders at $WSL_LIB - cuInit cannot work without them"
-		note "  sudo $PROG loaders install <ExHyperV>/lib"
+		note "  sudo $PROG loaders install <dir copied from C:\\Windows\\System32\\lxss\\lib>"
 	fi
 
 	# 3. the module

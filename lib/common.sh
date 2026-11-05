@@ -52,7 +52,7 @@ asset_write() {
 		cp -a "$SELF_DIR/src/$name" "$dest"
 		return 0
 	fi
-	local b64
+	local b64=""
 	eval "b64=\${$var:-}"
 	[ -n "$b64" ] || return 1
 	printf '%s' "$b64" | base64 -d > "$dest" || return 1
@@ -101,6 +101,16 @@ mark_fail() {
 	else
 		printf '  %sFAIL%s  %s\n' "$C_RED" "$C_OFF" "$1"
 	fi
+}
+
+# Reset the tallies so a phase's summary describes THAT phase. Without this,
+# 'setup' (which runs several sub-commands) reports the running total and a
+# successful run ends with "gates: 15 checks, 4 failed" from steps that were
+# fixed or skipped earlier.
+checks_reset() {
+	GPUPV_CHECKS=0
+	GPUPV_FAILS=0
+	GPUPV_FAILED_LIST=""
 }
 
 # mark <rc> <description> [detail]

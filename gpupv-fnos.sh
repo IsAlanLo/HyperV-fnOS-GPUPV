@@ -85,7 +85,7 @@ asset_write() {
 		cp -a "$SELF_DIR/src/$name" "$dest"
 		return 0
 	fi
-	local b64
+	local b64=""
 	eval "b64=\${$var:-}"
 	[ -n "$b64" ] || return 1
 	printf '%s' "$b64" | base64 -d > "$dest" || return 1
@@ -134,6 +134,16 @@ mark_fail() {
 	else
 		printf '  %sFAIL%s  %s\n' "$C_RED" "$C_OFF" "$1"
 	fi
+}
+
+# Reset the tallies so a phase's summary describes THAT phase. Without this,
+# 'setup' (which runs several sub-commands) reports the running total and a
+# successful run ends with "gates: 15 checks, 4 failed" from steps that were
+# fixed or skipped earlier.
+checks_reset() {
+	GPUPV_CHECKS=0
+	GPUPV_FAILS=0
+	GPUPV_FAILED_LIST=""
 }
 
 # mark <rc> <description> [detail]
@@ -322,11 +332,24 @@ _deps_bin_pkg() {
 	esac
 }
 
+# A binary is present if it is on PATH OR at a standard root-only location: a
+# non-root login shell on fnOS can have /usr/sbin and /sbin stripped from PATH, so
+# `command -v depmod` reported "missing" for an installed kmod. Check the paths a
+# root build will actually use.
+_deps_have() {
+	local p
+	have "$1" && return 0
+	for p in "/usr/sbin/$1" "/sbin/$1" "/usr/bin/$1" "/bin/$1" "/usr/local/bin/$1"; do
+		[ -x "$p" ] && return 0
+	done
+	return 1
+}
+
 # What is missing, one binary per line. Header files are checked separately.
 _deps_missing_bins() {
 	local b
 	for b in gcc make xz bc bison flex depmod; do
-		have "$b" || echo "$b"
+		_deps_have "$b" || echo "$b"
 	done
 }
 
@@ -365,17 +388,30 @@ cmd_deps() {
 		return 0
 	fi
 
-	[ -n "$missing" ] && mark_fail "missing binaries:$missing" "- these are what break the build with Error 127"
-	[ -n "$pkgs" ] && mark_fail "missing headers:$pkgs" "- objtool / compression / module signing"
-
+	# When this command is about to install them, a missing package is a TODO,
+	# not a failed check: counting it as a gate failure made a successful run
+	# report "gates: 15 checks, 4 failed" over packages it had just installed.
 	if [ "$do_install" -eq 0 ]; then
+		[ -n "$missing" ] && mark_fail "missing binaries:$missing" "- these are what break the build with Error 127"
+		[ -n "$pkgs" ] && mark_fail "missing headers:$pkgs" "- objtool / compression / module signing"
 		note ""
 		note "install with:  sudo $PROG deps --install"
 		return 1
 	fi
+	[ -n "$missing" ] && sub "missing binaries:$missing"
+	[ -n "$pkgs" ] && sub "missing headers:$pkgs"
 
 	need_root deps --install
-	have apt-get || die "no apt-get; install manually:$pkgs $(_deps_bin_pkg_list "$missing")"
+	# Only apt is implemented. On another distribution the answer is not a failed
+	# install but "here is the equivalent command", so the tool stays usable.
+	if ! have apt-get; then
+		mark_fail "no apt-get on this system" "- install the toolchain with your package manager"
+		note "  Debian/Ubuntu: apt-get install -y $pkgs"
+		note "  Fedora/RHEL:   dnf install -y $pkgs"
+		note "  Arch:          pacman -S --needed $pkgs"
+		note "then re-run:  $PROG deps"
+		return 1
+	fi
 
 	# Map binaries to packages, dedupe, and keep the fixed list order.
 	for b in $missing; do
@@ -669,20 +705,69 @@ _codec_matrix() {
 cmd_verify() {
 	local quick=0 ff smi out rc
 	[ "${1:-}" = "--quick" ] && quick=1
+	# verify is its own phase: earlier sub-commands in a 'setup' run must not
+	# leak their (already resolved) failures into this summary.
+	checks_reset
 
 	say "gate 1/5: module and device node"
 	if lsmod 2>/dev/null | grep -q '^dxgkrnl'; then mark_ok "dxgkrnl loaded"; else mark_fail "dxgkrnl loaded"; fi
 	if [ -e /dev/dxg ]; then mark_ok "/dev/dxg present"; else mark_fail "/dev/dxg present"; fi
-	local boundary=0
-	for d in /sys/bus/vmbus/devices/*/; do
-		[ -d "$d" ] || continue
-		case "$(cat "$d/class_id" 2>/dev/null)" in
-			*6e382d18*|*dde9cbc0*)
-				boundary=$((boundary + 1))
-				[ -e "$d/driver" ] || mark_fail "dxg channel $(basename "$d") has no driver bound";;
-		esac
+
+	# The channel directory is the decisive host-vs-guest signal, but VMBus
+	# enumeration lags a modprobe by a moment, and a guest may not expose the bus at
+	# all. Distinguish "counted zero" from "could not look": a bare "found 0" right
+	# after /dev/dxg appeared was reported as a host fault when the module had just
+	# created the device node.
+	local boundary=0 tries=0 vmbus_ok=0
+	[ -d /sys/bus/vmbus/devices ] && vmbus_ok=1
+	while [ "$tries" -lt 5 ]; do
+		boundary=0
+		for d in /sys/bus/vmbus/devices/*/; do
+			[ -d "$d" ] || continue
+			case "$(cat "$d/class_id" 2>/dev/null)" in
+				*6e382d18*|*dde9cbc0*)
+					boundary=$((boundary + 1))
+					[ -e "$d/driver" ] || mark_fail "dxg channel $(basename "$d") has no driver bound" ;;
+			esac
+		done
+		[ "$boundary" -ge 2 ] && break
+		tries=$((tries + 1))
+		[ "$tries" -lt 5 ] && sleep 1
 	done
-	[ "$boundary" -ge 2 ] && mark_ok "both dxg VMBus channels bound" || mark_fail "dxg VMBus channels" "found $boundary"
+
+	if [ "$boundary" -ge 2 ]; then
+		mark_ok "both dxg VMBus channels bound"
+	elif [ "$vmbus_ok" -eq 0 ]; then
+		# No bus to read. /dev/dxg existing means the driver did bind something, so
+		# this is unproven rather than broken - say which, do not invent a verdict.
+		if [ -e /dev/dxg ]; then
+			warn "cannot count dxg VMBus channels: /sys/bus/vmbus/devices is absent"
+			note "  /dev/dxg exists, so the driver bound something; check on the host side instead"
+		else
+			mark_fail "no /sys/bus/vmbus/devices" "- not a Hyper-V guest, or the module never started an adapter"
+		fi
+	elif [ -e /dev/dxg ]; then
+		# /dev/dxg is created by module init, so its existence says nothing about an
+		# adapter: 0 channels with the node present means the host never offered a
+		# GPU partition for THIS VM. Say that, and let the probe confirm it.
+		mark_fail "dxg VMBus channels (0)" "- host side: no GPU partition offered to this VM"
+		note "  /dev/dxg exists because dxgkrnl creates it at load, not because an adapter started"
+		note "  on the host:  .\gpupv-windows.ps1 -Action Check -VMName <name>   then -Action AddPartition"
+		note "  the guest side is otherwise complete; this is not a guest fault"
+	else
+		mark_fail "dxg VMBus channels" "found $boundary"
+		# Show what IS on the bus: a class_id that is not one of the two dxg GUIDs
+		# means the host offered something else (or nothing), which is a host-side
+		# answer rather than a guess.
+		local c n=0
+		while IFS= read -r d; do
+			[ -d "$d" ] || continue
+			c=$(cat "$d/class_id" 2>/dev/null)
+			n=$((n + 1))
+			[ "$n" -le 6 ] && note "  bus device $(basename "$d") class=$c"
+		done < <(ls -d /sys/bus/vmbus/devices/*/ 2>/dev/null)
+		[ "$n" -gt 0 ] && note "  ($n bus devices total; neither dxg GUID present)"
+	fi
 	if [ "$GPUPV_FAILS" -gt 0 ]; then
 		note "kernel path is not up; later gates cannot pass. Run: $PROG triage"
 		summary "gates"; return $?
@@ -698,7 +783,7 @@ cmd_verify() {
 	if [ "$lc" -eq 3 ]; then
 		mark_ok "loaders present in $WSL_LIB"
 	else
-		mark_fail "loaders missing in $WSL_LIB ($lc/3)" "- deploy ExHyperV's lib/: sudo $PROG loaders install <lib dir>"
+		mark_fail "loaders missing in $WSL_LIB ($lc/3)" "- copy the host's lxss/lib: sudo $PROG loaders install <dir>"
 	fi
 
 	local ds
@@ -1608,7 +1693,7 @@ cmd_ds_install() {
 	say "real consumer test (never nvidia-smi)"
 	if [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
 		mark_fail "cannot test cuInit: $WSL_LIB/libcuda.so.1 missing" \
-			"- the loaders are not deployed (they come from ExHyperV's lib/), the payload alone cannot run"
+			"- the loaders are not deployed (they come from the host's C:\\Windows\\System32\\lxss\\lib), so the payload alone cannot run"
 		note "the DriverStore copy above is still correct; install the loaders, then re-run: $PROG verify"
 		return "$GPUPV_FAILS"
 	fi
@@ -1658,9 +1743,12 @@ cmd_driverstore() {
 }
 
 # ====================== lib/loaders.sh ======================
-# lib/loaders.sh - deploy ExHyperV's `lib/` folder: the thin loaders in
-# /usr/lib/wsl/lib that turn the DriverStore payload into something applications
-# can call.
+# lib/loaders.sh - deploy the thin loaders in /usr/lib/wsl/lib that turn the
+# DriverStore payload into something applications can call.
+#
+# The source directory is C:\Windows\System32\lxss\lib on the host: it ships with
+# Windows itself and is refreshed by the NVIDIA driver. No third-party package is
+# required - ExHyperV's lib/ folder is just a copy of that directory.
 #
 # Two directories, two jobs (both are required; neither alone is enough):
 #   /usr/lib/wsl/lib          loaders      libcuda.so.1.1 ~171 KB, libnvidia-ml.so.1 ~267 KB,
@@ -1679,7 +1767,8 @@ cmd_loaders_status() {
 	say "loaders ($WSL_LIB)"
 	if [ ! -d "$WSL_LIB" ]; then
 		mark_fail "$WSL_LIB missing" "- nothing to load the payload with"
-		note "deploy ExHyperV's lib/ folder:  sudo $PROG loaders install <path/to/lib>"
+		note "copy the host's C:\\Windows\\System32\\lxss\\lib into the guest:"
+		note "  sudo $PROG loaders install <path/to/lxss/lib>"
 		return "$GPUPV_FAILS"
 	fi
 	local f n=0
@@ -1707,7 +1796,7 @@ cmd_loaders_status() {
 
 cmd_loaders_install() {
 	local src=${1:-}
-	[ -n "$src" ] || die "usage: sudo $PROG loaders install <path/to/ExHyperV/lib> [--driverstore DIR]"
+	[ -n "$src" ] || die "usage: sudo $PROG loaders install <path/to/lxss/lib> [--driverstore DIR]"
 	shift || true
 	local dstdrv=""
 	while [ $# -gt 0 ]; do
@@ -1743,7 +1832,8 @@ cmd_loaders_install() {
 	cp -a "$src/." "$WSL_LIB/" || die "copy failed"
 	chmod -R a+r "$WSL_LIB" 2>/dev/null || true
 
-	# The tooling (and ExHyperV's own script) expects these two links to exist.
+	# Two links the tooling expects: the mixed-case D3D12 name, and libcuda in the
+	# multiarch directory so a plain `-lcuda` finds the loader.
 	[ -e "$WSL_LIB/libd3d12core.so" ] && ln -sf "$WSL_LIB/libd3d12core.so" "$WSL_LIB/libD3D12Core.so" 2>/dev/null || true
 	if [ -e "$WSL_LIB/libcuda.so.1" ]; then
 		mkdir -p /usr/lib/x86_64-linux-gnu
@@ -1810,11 +1900,39 @@ cmd_loaders() {
 #   * the self-test unit is wanted by multi-user.target while the loader runs
 #     after graphical.target, so the test either runs before the GPU exists or
 #     is dropped by the ordering cycle.
+#
+# And one it caused once: a heredoc whose delimiter did not match wrote a
+# TRUNCATED loader script, reported "wrote ... OK", and only failed at the next
+# boot with "EOF: command not found". Every generated file is therefore staged,
+# syntax-checked and only then installed - and a failed write is never reported
+# as success.
 
 SVC_LOADER=/usr/local/bin/load_dxg_driver.sh
 SVC_SELFTEST=/usr/local/bin/gpupv-selftest.sh
 SVC_LOG=/var/log/load-dxg.log
 SVC_ENV_DIR=/etc/gpupv
+SVC_UNIT_DIR=/etc/systemd/system
+
+# stage <dest> : read the body from stdin, verify it, install it atomically.
+_svc_install_file() {
+	local dest=$1 mode=${2:-644}
+	local tmp
+	tmp=$(mktemp "${TMPDIR:-/tmp}/gpupv-svc.XXXXXX") || die "mktemp failed"
+	if ! cat > "$tmp"; then rm -f "$tmp"; die "cannot stage $dest"; fi
+	[ -s "$tmp" ] || { rm -f "$tmp"; die "empty body for $dest"; }
+	if [ "$mode" = "755" ]; then
+		if ! bash -n "$tmp" 2>/tmp/.gpupv-svc.err; then
+			sed 's/^/  /' /tmp/.gpupv-svc.err
+			rm -f "$tmp" /tmp/.gpupv-svc.err
+			die "generated script for $dest failed bash -n - refusing to install it"
+		fi
+		rm -f /tmp/.gpupv-svc.err
+	fi
+	install -m "$mode" "$tmp" "$dest" || { rm -f "$tmp"; die "cannot install $dest"; }
+	rm -f "$tmp"
+	[ -s "$dest" ] || die "$dest is empty after install"
+	return 0
+}
 
 cmd_service_install() {
 	need_root service install
@@ -1827,13 +1945,14 @@ cmd_service_install() {
 	done
 	say "service install"
 
-	mkdir -p "$SVC_ENV_DIR"
-	cat > "$SVC_ENV_DIR/loader.conf" <<EOF
-# generated by gpupv.sh - values read by load_dxg_driver.sh
+	mkdir -p "$SVC_ENV_DIR" || die "cannot create $SVC_ENV_DIR"
+
+	_svc_install_file "$SVC_ENV_DIR/loader.conf" 644 <<EOF
+# generated by $PROG - values read by load_dxg_driver.sh
 GPUPV_LOG=$SVC_LOG
 EOF
 
-	cat > "$SVC_LOADER" <<'EOS'
+	_svc_install_file "$SVC_LOADER" 755 <<'EOS'
 #!/bin/bash
 # load dxgkrnl at late boot. No hard-coded kernel: the module is built for
 # whatever kernel is running, so the loader must ask for the same one.
@@ -1868,11 +1987,10 @@ fi
 
 lsmod | grep dxgkrnl >> "$LOG" 2>&1 || echo "dxgkrnl NOT loaded" >> "$LOG"
 ls -l /dev/dxg >> "$LOG" 2>&1 || true
-EOF
-	chmod 755 "$SVC_LOADER"
-	mark_ok "wrote $SVC_LOADER (KERNEL=\$(uname -r))"
+EOS
+	mark_ok "wrote $SVC_LOADER (KERNEL=\$(uname -r), bash -n clean)"
 
-	cat > /etc/systemd/system/load-dxg-late.service <<'EOS'
+	_svc_install_file "$SVC_UNIT_DIR/load-dxg-late.service" 644 <<EOS
 [Unit]
 Description=Late load dxgkrnl (GPU-PV)
 After=graphical.target
@@ -1880,35 +1998,40 @@ After=graphical.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=GPUPV_LOG=/var/log/load-dxg.log
-ExecStart=/usr/local/bin/load_dxg_driver.sh
+Environment=GPUPV_LOG=$SVC_LOG
+ExecStart=$SVC_LOADER
 TimeoutStartSec=120
 
 [Install]
 WantedBy=graphical.target
 EOS
-	systemctl daemon-reload
-	systemctl enable load-dxg-late.service >/dev/null 2>&1
-	mark_ok "load-dxg-late.service enabled (WantedBy=graphical.target)"
+	systemctl daemon-reload >/dev/null 2>&1 || warn "systemctl daemon-reload failed"
+	if systemctl enable load-dxg-late.service >/dev/null 2>&1; then
+		mark_ok "load-dxg-late.service enabled (WantedBy=graphical.target)"
+	else
+		mark_fail "could not enable load-dxg-late.service" "- systemctl enable failed"
+	fi
 
 	if [ "$selftest" -eq 1 ]; then
-		cat > "$SVC_SELFTEST" <<'EOS'
+		_svc_install_file "$SVC_SELFTEST" 755 <<'EOS'
 #!/bin/bash
 # Post-boot GPU-PV self test. Runs after the loader, records one line per gate
 # so a silent regression is visible without logging in and running things.
 KERNEL="$(uname -r)"
-LOG=${GPUPV_LOG:-/var/log/load-dxg.log}
 echo "==== gpupv-selftest $(date) ===="
 echo "kernel: $KERNEL"
 lsmod | grep dxgkrnl || echo "dxgkrnl NOT loaded"
 ls -l /dev/dxg 2>&1
 DS=$(ls -d /usr/lib/wsl/drivers/nv_dispi.inf_amd64_* 2>/dev/null | head -1)
 echo "driverstore: ${DS:-none} $(ls -1 "$DS" 2>/dev/null | wc -l) files / $(ls -1 "$DS" 2>/dev/null | grep -vc '\.so') non-so"
-timeout 30 python3 -c 'import ctypes; print("cuInit", ctypes.CDLL("/usr/lib/wsl/lib/libcuda.so.1").cuInit(0))' 2>&1
+if [ -e /usr/lib/wsl/lib/libcuda.so.1 ]; then
+	timeout 30 python3 -c 'import ctypes; print("cuInit", ctypes.CDLL("/usr/lib/wsl/lib/libcuda.so.1").cuInit(0))' 2>&1
+else
+	echo "cuInit: skipped (no /usr/lib/wsl/lib/libcuda.so.1 - loaders not deployed)"
+fi
 EOS
-		chmod 755 "$SVC_SELFTEST"
 
-		cat > /etc/systemd/system/gpupv-selftest.service <<'EOS'
+		_svc_install_file "$SVC_UNIT_DIR/gpupv-selftest.service" 644 <<EOS
 [Unit]
 Description=GPU-PV self test
 After=graphical.target load-dxg-late.service
@@ -1916,22 +2039,36 @@ Wants=load-dxg-late.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/gpupv-selftest.sh
-StandardOutput=append:/var/log/load-dxg.log
-StandardError=append:/var/log/load-dxg.log
+ExecStart=$SVC_SELFTEST
+StandardOutput=append:$SVC_LOG
+StandardError=append:$SVC_LOG
 TimeoutStartSec=120
 
 [Install]
 WantedBy=graphical.target
 EOS
-		systemctl daemon-reload
-		systemctl enable gpupv-selftest.service >/dev/null 2>&1
-		mark_ok "gpupv-selftest.service enabled (After=graphical.target load-dxg-late.service)"
+		systemctl daemon-reload >/dev/null 2>&1 || warn "systemctl daemon-reload failed"
+		if systemctl enable gpupv-selftest.service >/dev/null 2>&1; then
+			mark_ok "gpupv-selftest.service enabled (After=graphical.target load-dxg-late.service)"
+		else
+			mark_fail "could not enable gpupv-selftest.service" "- systemctl enable failed"
+		fi
 	fi
 
 	say "running the loader once now"
-	GPUPV_LOG="$SVC_LOG" bash "$SVC_LOADER"
+	if GPUPV_LOG="$SVC_LOG" bash "$SVC_LOADER"; then
+		mark_ok "loader ran"
+	else
+		# The loader itself is `|| true`-heavy, so a non-zero exit means the file
+		# is broken rather than the module being absent - say that plainly.
+		mark_fail "the loader script exited non-zero" "- it may be truncated; re-run: sudo $PROG service install"
+	fi
 	tail -5 "$SVC_LOG" 2>/dev/null | sed 's/^/  /'
+	if [ -e /dev/dxg ]; then
+		mark_ok "/dev/dxg present after the loader ran"
+	else
+		mark_fail "/dev/dxg absent after the loader ran" "- see: $PROG triage"
+	fi
 	note ""
 	note "reboot, then check:  tail -20 $SVC_LOG"
 }
@@ -1940,7 +2077,7 @@ cmd_service_status() {
 	say "service status"
 	local u en ac
 	for u in load-dxg-late.service gpupv-selftest.service; do
-		if [ -e "/etc/systemd/system/$u" ]; then
+		if [ -e "$SVC_UNIT_DIR/$u" ]; then
 			en=$(systemctl show -p UnitFileState --value "$u" 2>/dev/null)
 			ac=$(systemctl show -p ActiveState   --value "$u" 2>/dev/null)
 			note "$u: enabled=${en:-unknown} active=${ac:-unknown}"
@@ -1956,20 +2093,28 @@ cmd_service_status() {
 			*'$(uname -r)'*|"") : ;;
 			*) warn "hard-coded kernel in the loader - run: sudo $PROG service install" ;;
 		esac
+		# A truncated loader is the failure that hides until the next boot.
+		if bash -n "$SVC_LOADER" 2>/dev/null; then
+			note "loader syntax  ok"
+		else
+			mark_fail "loader $SVC_LOADER has a syntax error" "- re-run: sudo $PROG service install"
+		fi
+		[ -e "$SVC_LOG" ] || warn "$SVC_LOG does not exist yet (the loader has not run)"
 	fi
 	[ -r "$SVC_LOG" ] && { sub "log tail"; tail -15 "$SVC_LOG" | sed 's/^/  /'; }
+	return "$GPUPV_FAILS"
 }
 
 cmd_service_uninstall() {
-	need_root service install
+	need_root service uninstall
 	say "service uninstall"
 	local u
 	for u in gpupv-selftest.service load-dxg-late.service; do
 		systemctl disable --now "$u" >/dev/null 2>&1 || true
-		rm -f "/etc/systemd/system/$u"
+		rm -f "$SVC_UNIT_DIR/$u"
 	done
 	rm -f "$SVC_SELFTEST"
-	systemctl daemon-reload
+	systemctl daemon-reload >/dev/null 2>&1 || true
 	mark_ok "units removed (module and driverstore untouched)"
 	note "$SVC_LOADER left in place - remove it by hand if you no longer want it"
 }
@@ -2047,7 +2192,7 @@ usage: sudo ./gpupv-fnos.sh <command> [options]
   driverstore rollback [--driverstore DIR]
 
   loaders status             /usr/lib/wsl/lib: the thin loaders + nvidia-smi + ld.so path
-  loaders install LIBDIR     deploy ExHyperV's lib/ folder (the other half of the stack)
+  loaders install LIBDIR     deploy the thin loaders (host: C:\Windows\System32\lxss\lib)
   loaders rollback
 
   receive [DIR] [PORT]       HTTP PUT receiver for the host's DriverStore (default
@@ -2100,13 +2245,13 @@ cmd_setup() {
 		die "cannot continue without a compiler - install the toolchain, then re-run setup"
 	fi
 
-	# 2. loaders (ExHyperV's lib/) - the payload alone cannot be loaded
+	# 2. loaders (host C:\Windows\System32\lxss\lib) - the payload alone cannot load
 	if [ -n "$libdir" ]; then
 		sub "loaders from $libdir"
 		cmd_loaders_install "$libdir" || warn "loaders install reported a problem"
 	elif [ ! -e "$WSL_LIB/libcuda.so.1" ]; then
 		warn "no loaders at $WSL_LIB - cuInit cannot work without them"
-		note "  sudo $PROG loaders install <ExHyperV>/lib"
+		note "  sudo $PROG loaders install <dir copied from C:\\Windows\\System32\\lxss\\lib>"
 	fi
 
 	# 3. the module

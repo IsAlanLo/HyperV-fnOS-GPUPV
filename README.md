@@ -22,7 +22,7 @@ gpupv-windows.ps1                       gpupv-fnos.sh
 以**系統管理員 PowerShell** 執行：
 
 ```powershell
-.\gpupv-windows.ps1 -Action Auto -GuestUser <guest 帳號>
+.\gpupv-windows.ps1 -Action Auto -GuestUser <guest 帳號> -GuestHost <guest ip> -SudoPrompt
 ```
 
 `Auto` = 自動偵測 VM → 自動取得 guest IP(有時候取不到需要加上-GusetHost ip) → 缺 GPU 分區就自己分配（含 MMIO）並冷啟動 →
@@ -30,7 +30,7 @@ gpupv-windows.ps1                       gpupv-fnos.sh
 
 只會問你：
 
-1. guest 的 sudo 密碼（一次，`[sudo] password:` 會**立刻**顯示）
+1. guest 的 user 和 sudo 密碼(~~要打好多次~~)
 2. 若需要分配分區：`Type YES to continue`（VM 會被關機再冷啟動）
 
 不用記任何旗標。若 VM 有多台、或 Hyper-V 拿不到 IP，它會**列出清單要你指定**

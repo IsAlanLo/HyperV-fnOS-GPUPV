@@ -1,7 +1,8 @@
 # HyperV-fnos-GPUPV
 
-Hyper-V **GPU-PV** (GPU partitioning) for a Linux guest — one script on the Windows host, one on the
-guest. Tested with fnOS/Debian and an RTX 3060 Ti; nothing in it is specific to that machine.
+Hyper-V **GPU-PV** 用於 fnOS HyperV vm
+
+已在 fnOS 1.20.0505 和 Windows 10 22h2 RTX 3060 Ti/RTX 5070 上測試
 
 ```
 Windows 主機                            Linux guest (fnOS / Debian / Ubuntu)

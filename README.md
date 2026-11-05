@@ -51,8 +51,6 @@ gpupv-windows.ps1                       gpupv-fnos.sh
 | loaders | `/usr/lib/wsl/lib` | `C:\Windows\System32\lxss\lib` |
 | payload | `/usr/lib/wsl/drivers/nv_dispi.inf_amd64_<hash>/` | `C:\Windows\System32\DriverStore\FileRepository\…` |
 
-（ExHyperV 的 `lib/` 只是 `lxss\lib` 的複本；本工具直接取原始那份。）
-
 ---
 
 ## 自動判斷的部分（傻瓜化）

@@ -158,10 +158,9 @@ sudo ./gpupv-fnos.sh setup    # 工具鏈 + 模組 + driverstore + 開機服務 
 ## 已驗證
 
 | | |
-|---|---|
-| guest | Debian 12 / fnOS，kernel 6.18.18.c1032-trim，RTX 3060 Ti，driver 591.86 / CUDA 13.1 |
-| host | Windows 10 Pro for Workstations 22H2 19045 |
-| 測試 | `tests/smoke.sh --no-build` 47/47、`tests/e2e_deploy.sh` 25/25、`tests/pty_prompt_probe.sh` 3/3，兩個模組分支都能編譯並通過 ABI gate |
+| guest | fnOS 1.20.0505，kernel 6.18.18.c1032-trim，RTX 3060 Ti，driver 591.86 / CUDA 13.1 / RTX 5070, driver 610.74  / CUDA 13.3|
+| host | Windows 10 Pro for Workstations 22H2 19045 / Windows 10 Pro 22H2 19045 |
+| 測試 | ✅ dkms status 顯示模組已安裝 | ✅ lsmod | grep dxgkrnl 模組已載入 | ✅ Codec	| ✅ CUDA/OpenCL | ❌ fnOS相冊/影視gpu識別，建議使用第三方app e.g.Jellyfin |
 
 ## 開發
 
